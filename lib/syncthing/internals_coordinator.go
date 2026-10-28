@@ -18,7 +18,7 @@ import (
 type FolderHandle = model.FolderHandle
 
 type coordinatedModel interface {
-	RunInFolderLoop(folder string, fn func(context.Context, model.FolderHandle) error) error
+	RunInFolderLoop(ctx context.Context, folder string, fn func(context.Context, model.FolderHandle) error) error
 	LocalIndexID(folder string) (protocol.IndexID, error)
 	LocalSequence(folder string) (int64, error)
 }
@@ -34,13 +34,15 @@ func (m *Internals) coordinated() (coordinatedModel, error) {
 }
 
 // RunInFolderLoop runs fn in the folder's serve loop, where it cannot overlap
-// a scan or a pull of the folder, and returns its error.
-func (m *Internals) RunInFolderLoop(folderID string, fn func(context.Context, FolderHandle) error) error {
+// a scan or a pull of the folder, and returns its error. When ctx is done
+// before the serve loop takes fn, it returns ctx's error and fn does not run.
+// fn's context, derived from ctx, is also canceled when the folder stops.
+func (m *Internals) RunInFolderLoop(ctx context.Context, folderID string, fn func(context.Context, FolderHandle) error) error {
 	c, err := m.coordinated()
 	if err != nil {
 		return err
 	}
-	return c.RunInFolderLoop(folderID, fn)
+	return c.RunInFolderLoop(ctx, folderID, fn)
 }
 
 // LocalIndexID returns the ID of this device's index of the folder, which

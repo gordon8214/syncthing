@@ -62,16 +62,20 @@ func (f *folder) baseFolder() *folder {
 }
 
 // runCoordinated runs fn in the serve loop, once the initial scan has
-// finished. The error fn returns is the caller's: it does not put the folder
-// into an error state.
-func (f *folder) runCoordinated(fn func(context.Context) error) error {
+// finished, with a context derived from ctx that is also canceled when the
+// folder stops. When ctx is done before the serve loop takes fn, it returns
+// ctx's error and fn does not run. The error fn returns is the caller's: it
+// does not put the folder into an error state.
+func (f *folder) runCoordinated(ctx context.Context, fn func(context.Context) error) error {
 	select {
 	case <-f.initialScanFinished:
 	case <-f.done:
 		return context.Canceled
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	var opErr error
-	err := f.doInSync(func(ctx context.Context) error {
+	err := f.doInSyncContext(ctx, func(folderCtx context.Context) error {
 		oldHash := f.ignores.Hash()
 		if err := f.getHealthErrorAndLoadIgnores(); err != nil {
 			opErr = err
@@ -81,17 +85,44 @@ func (f *folder) runCoordinated(fn func(context.Context) error) error {
 			// As in scanSubdirs: this load, and not the scan that may be
 			// scheduled for it, noticed the change, so the watcher must be
 			// restarted and a pull scheduled here.
-			f.sl.DebugContext(ctx, "Ignore patterns change detected before a coordinated change; triggering puller")
+			f.sl.DebugContext(folderCtx, "Ignore patterns change detected before a coordinated change; triggering puller")
 			f.ignoresUpdated()
 			f.SchedulePull()
 		}
-		opErr = fn(ctx)
-		return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			// The caller's context ended as the serve loop took this.
+			opErr = err
+			return nil
+		}
+		opCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		defer context.AfterFunc(folderCtx, cancel)()
+		opErr = fn(opCtx)
+		return folderCtx.Err()
 	})
 	if opErr != nil {
 		return opErr
 	}
 	return err
+}
+
+// doInSyncContext is doInSync for a caller that stops waiting for the serve
+// loop to take fn when ctx is done, and then gets ctx's error. Once the loop
+// has taken fn, it waits for fn's result.
+func (f *folder) doInSyncContext(ctx context.Context, fn func(context.Context) error) error {
+	req := syncRequest{
+		fn:  fn,
+		err: make(chan error, 1),
+	}
+
+	select {
+	case f.doInSyncChan <- req:
+		return <-req.err
+	case <-f.done:
+		return context.Canceled
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // commitLocal indexes files as local changes. It must run in the serve loop.
@@ -194,12 +225,14 @@ func (h *folderHandle) Scan(ctx context.Context, subs []string) error {
 
 // RunInFolderLoop runs fn in the folder's serve loop, where it cannot overlap
 // a scan or a pull of the folder, and returns its error. It waits for the
-// initial scan and for any scan or pull in progress.
+// initial scan and for any scan or pull in progress, unless ctx is done
+// first: it then returns ctx's error, and fn does not run.
 //
-// fn must not call methods that wait for the folder's serve loop, such as
-// ScanFolderSubdirs, and should return when its context is cancelled: the
+// fn's context, derived from ctx, is also canceled when the folder stops. fn
+// must not call methods that wait for the folder's serve loop, such as
+// ScanFolderSubdirs, and should return when its context is canceled: the
 // folder cannot stop before it does.
-func (m *model) RunInFolderLoop(folderID string, fn func(context.Context, FolderHandle) error) error {
+func (m *model) RunInFolderLoop(ctx context.Context, folderID string, fn func(context.Context, FolderHandle) error) error {
 	m.mut.RLock()
 	err := m.checkFolderRunningRLocked(folderID)
 	runner, ok := m.folderRunners.Get(folderID)
@@ -216,7 +249,7 @@ func (m *model) RunInFolderLoop(folderID string, fn func(context.Context, Folder
 	}
 	f := based.baseFolder()
 	h := &folderHandle{f: f, runner: runner}
-	return f.runCoordinated(func(ctx context.Context) error {
+	return f.runCoordinated(ctx, func(ctx context.Context) error {
 		return fn(ctx, h)
 	})
 }

@@ -14,7 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -67,7 +69,7 @@ func TestRunInFolderLoopCommitsLikeAScan(t *testing.T) {
 	before, err := m.LocalSequence(fcfg.ID)
 	must(t, err)
 
-	err = m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, h FolderHandle) error {
+	err = m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
 		_, err := publish(ctx, h, fcfg.Path, "a.txt", []byte("two two"))
 		return err
 	})
@@ -112,7 +114,7 @@ func TestRunInFolderLoopCommitsLikeAScan(t *testing.T) {
 
 func TestRunInFolderLoopCreatesAndDeletes(t *testing.T) {
 	m, fcfg := setupCoordinatedFolder(t, nil)
-	err := m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, h FolderHandle) error {
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
 		if err := h.Filesystem().Mkdir("d", 0o755); err != nil {
 			return err
 		}
@@ -136,7 +138,7 @@ func TestRunInFolderLoopCreatesAndDeletes(t *testing.T) {
 		t.Fatalf("empty file not indexed: %v", file)
 	}
 
-	err = m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, h FolderHandle) error {
+	err = m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
 		cur, ok, err := h.CurrentFile("d/b")
 		if err != nil || !ok {
 			return fmt.Errorf("current file: %v %v", ok, err)
@@ -168,7 +170,7 @@ func TestRunInFolderLoopCreatesAndDeletes(t *testing.T) {
 func TestRunInFolderLoopErrorsAreTheCallers(t *testing.T) {
 	m, fcfg := setupCoordinatedFolder(t, nil)
 	failure := errors.New("operation failed")
-	err := m.RunInFolderLoop(fcfg.ID, func(context.Context, FolderHandle) error {
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(context.Context, FolderHandle) error {
 		return failure
 	})
 	if !errors.Is(err, failure) {
@@ -177,7 +179,7 @@ func TestRunInFolderLoopErrorsAreTheCallers(t *testing.T) {
 	// The serve loop sets the folder's state after the caller has the error.
 	// It has done so for the failed operation once it runs the next one,
 	// which itself does not change the state until it returns.
-	err = m.RunInFolderLoop(fcfg.ID, func(context.Context, FolderHandle) error {
+	err = m.RunInFolderLoop(t.Context(), fcfg.ID, func(context.Context, FolderHandle) error {
 		state, _, err := m.State(fcfg.ID)
 		if err != nil || state == FolderError.String() {
 			return fmt.Errorf("a failed operation put the folder into an error state (%s, %v)", state, err)
@@ -185,7 +187,7 @@ func TestRunInFolderLoopErrorsAreTheCallers(t *testing.T) {
 		return nil
 	})
 	must(t, err)
-	if err := m.RunInFolderLoop("missing", func(context.Context, FolderHandle) error { return nil }); err == nil {
+	if err := m.RunInFolderLoop(t.Context(), "missing", func(context.Context, FolderHandle) error { return nil }); err == nil {
 		t.Fatal("ran in a folder that doesn't exist")
 	}
 }
@@ -193,7 +195,7 @@ func TestRunInFolderLoopErrorsAreTheCallers(t *testing.T) {
 func TestRunInFolderLoopIgnoresAndReservedState(t *testing.T) {
 	m, fcfg := setupCoordinatedFolder(t, nil)
 	must(t, m.SetIgnores(fcfg.ID, []string{"*.tmp"}))
-	err := m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(_ context.Context, h FolderHandle) error {
 		if !h.IsIgnored("x.tmp") || h.IsIgnored("x.txt") {
 			return errors.New("ignore patterns not applied")
 		}
@@ -223,7 +225,7 @@ func TestRunInFolderLoopNoticesIgnoreChanges(t *testing.T) {
 		default:
 		}
 	}
-	err := m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(_ context.Context, h FolderHandle) error {
 		// Nothing reads these channels while the serve loop runs this.
 		f := h.(*folderHandle).f
 		drain(f.pullScheduled)
@@ -231,7 +233,7 @@ func TestRunInFolderLoopNoticesIgnoreChanges(t *testing.T) {
 		return os.WriteFile(filepath.Join(fcfg.Path, ".stignore"), []byte("*.tmp\n"), 0o644)
 	})
 	must(t, err)
-	err = m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+	err = m.RunInFolderLoop(t.Context(), fcfg.ID, func(_ context.Context, h FolderHandle) error {
 		if !h.IsIgnored("x.tmp") {
 			return errors.New("new ignore patterns not loaded")
 		}
@@ -254,7 +256,7 @@ func TestRunInFolderLoopArchivesPlatformHistory(t *testing.T) {
 	})
 	must(t, os.WriteFile(filepath.Join(fcfg.Path, "file.txt"), []byte("old contents"), 0o644))
 	must(t, m.ScanFolder(fcfg.ID))
-	err := m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, h FolderHandle) error {
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
 		if !h.HasVersioner() {
 			return errors.New("no versioner")
 		}
@@ -290,7 +292,7 @@ func TestRunInFolderLoopNames(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(fcfg.Path, native), []byte("contents"), 0o644))
 	must(t, m.SetIgnores(fcfg.ID, []string{"crème*"}))
 	must(t, m.ScanFolder(fcfg.ID))
-	err = m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+	err = m.RunInFolderLoop(t.Context(), fcfg.ID, func(_ context.Context, h FolderHandle) error {
 		for _, name := range []string{native, other} {
 			if cur, ok, err := h.CurrentFile(name); err != nil || !ok || cur.Name != native {
 				return fmt.Errorf("current file %q: %v %v %v", name, cur.Name, ok, err)
@@ -335,7 +337,7 @@ func TestRunInFolderLoopSerializedWithScans(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			name := fmt.Sprintf("f%d", i)
-			errs <- m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, h FolderHandle) error {
+			errs <- m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
 				_, err := publish(ctx, h, fcfg.Path, name, []byte(name))
 				return err
 			})
@@ -364,7 +366,7 @@ func TestRunInFolderLoopStopsWithTheFolder(t *testing.T) {
 	entered := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- m.RunInFolderLoop(fcfg.ID, func(ctx context.Context, _ FolderHandle) error {
+		done <- m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, _ FolderHandle) error {
 			close(entered)
 			<-ctx.Done()
 			return ctx.Err()
@@ -377,4 +379,95 @@ func TestRunInFolderLoopStopsWithTheFolder(t *testing.T) {
 	if err := <-done; err == nil {
 		t.Fatal("cancelled operation reported success")
 	}
+}
+
+// A caller stops waiting for a busy serve loop when its context ends, and its
+// operation then never runs.
+func TestRunInFolderLoopCallerStopsWaiting(t *testing.T) {
+	m, fcfg := setupCoordinatedFolder(t, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	busy := make(chan error, 1)
+	go func() {
+		busy <- m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, _ FolderHandle) error {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil
+		})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var ran atomic.Bool
+	waiting := make(chan error, 1)
+	go func() {
+		waiting <- m.RunInFolderLoop(ctx, fcfg.ID, func(context.Context, FolderHandle) error {
+			ran.Store(true)
+			return nil
+		})
+	}()
+	// Let the caller get to waiting for the serve loop, past the wait for
+	// the initial scan.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-waiting:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v, not the context's error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("still waiting for the busy serve loop after the context ended")
+	}
+	close(release)
+	must(t, <-busy)
+
+	// Whatever the serve loop had taken, it has run before this.
+	must(t, m.RunInFolderLoop(t.Context(), fcfg.ID, func(context.Context, FolderHandle) error { return nil }))
+	if ran.Load() {
+		t.Fatal("operation ran after its caller stopped waiting")
+	}
+}
+
+// The operation's context derives from the caller's and ends with it, which
+// leaves the folder without an error.
+func TestRunInFolderLoopCallerCancelsTheOperation(t *testing.T) {
+	m, fcfg := setupCoordinatedFolder(t, nil)
+	type key struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), key{}, "caller"))
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RunInFolderLoop(ctx, fcfg.ID, func(ctx context.Context, _ FolderHandle) error {
+			close(entered)
+			if ctx.Value(key{}) != "caller" {
+				return errors.New("context not derived from the caller's")
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Second):
+				return errors.New("context not canceled with the caller's")
+			}
+		})
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("operation did not run: %v", err)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, not the context's error", err)
+	}
+	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(context.Context, FolderHandle) error {
+		state, _, err := m.State(fcfg.ID)
+		if err != nil || state == FolderError.String() {
+			return fmt.Errorf("a canceled operation put the folder into an error state (%s, %v)", state, err)
+		}
+		return nil
+	})
+	must(t, err)
 }
