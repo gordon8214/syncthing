@@ -42,6 +42,9 @@ const (
 )
 
 func New(cfg config.FolderConfiguration) (Versioner, error) {
+	if cfg.Versioning.Params["preservePlatformData"] == "true" && (cfg.Versioning.Type != "staggered" || cfg.Versioning.FSPath != "") {
+		return nil, errors.New("platform history requires staggered versioning in the default directory")
+	}
 	fac, ok := factories[cfg.Versioning.Type]
 	if !ok {
 		return nil, fmt.Errorf("requested versioning type %q does not exist", cfg.Versioning.Type)

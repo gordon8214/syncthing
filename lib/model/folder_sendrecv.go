@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -958,7 +959,7 @@ func (f *sendReceiveFolder) deleteFileWithCurrent(file, cur protocol.FileInfo, h
 
 	case f.versioner != nil && !cur.IsSymlink():
 		// If we have a versioner, use that to move the file away
-		err = f.inWritableDir(f.versioner.Archive, file.Name)
+		err = f.inWritableDir(f.archiveVersion, file.Name)
 
 	default:
 		// Delete the file
@@ -1089,7 +1090,7 @@ func (f *sendReceiveFolder) renameFile(cur, source, target protocol.FileInfo, db
 		if err == nil {
 			err = osutil.Copy(f.CopyRangeMethod.ToFS(), f.mtimefs, f.mtimefs, source.Name, tempName)
 			if err == nil {
-				err = f.inWritableDir(f.versioner.Archive, source.Name)
+				err = f.inWritableDir(f.archiveVersion, source.Name)
 			}
 		}
 	} else {
@@ -1326,6 +1327,12 @@ func (f *sendReceiveFolder) shortcutFile(file, curFile protocol.FileInfo, dbUpda
 		return
 	}
 
+	if pv, ok := versioner.WithPlatformData(f.versioner); ok && !reflect.DeepEqual(curFile.Platform, file.Platform) {
+		if err = pv.ArchiveWithPlatformData(file.Name, curFile.Platform, true); err != nil {
+			f.newPullError(file.Name, fmt.Errorf("archiving file metadata: %w", err))
+			return
+		}
+	}
 	if !f.IgnorePerms && !file.NoPermissions {
 		if err = f.mtimefs.Chmod(file.Name, fs.FileMode(file.Permissions&0o777)); err != nil {
 			f.newPullError(file.Name, fmt.Errorf("shortcut file (setting permissions): %w", err))
@@ -2007,7 +2014,7 @@ func (f *sendReceiveFolder) deleteItemOnDisk(item protocol.FileInfo, scanChan ch
 		// an error.
 		// Symlinks aren't archived.
 
-		return f.inWritableDir(f.versioner.Archive, item.Name)
+		return f.inWritableDir(f.archiveVersion, item.Name)
 	}
 
 	return f.inWritableDir(f.mtimefs.Remove, item.Name)
@@ -2290,4 +2297,18 @@ func existingConflicts(name string, fs fs.Filesystem) []string {
 		slog.Debug("Globbing for conflicts failed", slogutil.Error(err))
 	}
 	return matches
+}
+
+func (f *sendReceiveFolder) archiveVersion(path string) error {
+	if pv, ok := versioner.WithPlatformData(f.versioner); ok {
+		current, exists, err := f.db.GetDeviceFile(f.folderID, protocol.LocalDeviceID, path)
+		if err != nil {
+			return err
+		}
+		if !exists || current.Deleted {
+			return errors.New("cannot archive without indexed platform metadata")
+		}
+		return pv.ArchiveWithPlatformData(path, current.Platform, false)
+	}
+	return f.versioner.Archive(path)
 }

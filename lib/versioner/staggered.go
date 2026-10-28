@@ -8,9 +8,11 @@ package versioner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/syncthing/syncthing/lib/config"
@@ -28,10 +30,13 @@ type interval struct {
 }
 
 type staggered struct {
-	folderFs        fs.Filesystem
-	versionsFs      fs.Filesystem
-	interval        [4]interval
-	copyRangeMethod fs.CopyRangeMethod
+	preservePlatformData bool
+	platformMut          sync.Mutex
+	lastPlatformGC       time.Time
+	folderFs             fs.Filesystem
+	versionsFs           fs.Filesystem
+	interval             [4]interval
+	copyRangeMethod      fs.CopyRangeMethod
 }
 
 func newStaggered(cfg config.FolderConfiguration) Versioner {
@@ -44,8 +49,9 @@ func newStaggered(cfg config.FolderConfiguration) Versioner {
 	versionsFs := versionerFsFromFolderCfg(cfg)
 
 	s := &staggered{
-		folderFs:   cfg.Filesystem(),
-		versionsFs: versionsFs,
+		folderFs:             cfg.Filesystem(),
+		preservePlatformData: params["preservePlatformData"] == "true",
+		versionsFs:           versionsFs,
 		interval: [4]interval{
 			{30, 60 * 60},                     // first hour -> 30 sec between versions
 			{60 * 60, 24 * 60 * 60},           // next day -> 1 h between versions
@@ -60,7 +66,18 @@ func newStaggered(cfg config.FolderConfiguration) Versioner {
 }
 
 func (v *staggered) Clean(ctx context.Context) error {
-	return clean(ctx, v.versionsFs, v.toRemove)
+	v.platformMut.Lock()
+	defer v.platformMut.Unlock()
+	if err := clean(ctx, v.versionsFs, v.toRemove, v.preservePlatformData); err != nil {
+		return err
+	}
+	if v.preservePlatformData && time.Since(v.lastPlatformGC) > 24*time.Hour {
+		if err := v.reconcilePlatformData(ctx); err != nil {
+			return err
+		}
+		v.lastPlatformGC = time.Now()
+	}
+	return nil
 }
 
 func (v *staggered) toRemove(versions []string, now time.Time) []string {
@@ -116,6 +133,9 @@ func (v *staggered) toRemove(versions []string, now time.Time) []string {
 // Archive moves the named file away to a version archive. If this function
 // returns nil, the named file does not exist any more (has been archived).
 func (v *staggered) Archive(filePath string) error {
+	if v.preservePlatformData {
+		return errors.New("archive requires indexed platform metadata")
+	}
 	if err := archiveFile(v.copyRangeMethod, v.folderFs, v.versionsFs, filePath, TagFilename); err != nil {
 		return err
 	}
@@ -126,10 +146,15 @@ func (v *staggered) Archive(filePath string) error {
 }
 
 func (v *staggered) GetVersions() (map[string][]FileVersion, error) {
-	return retrieveVersions(v.versionsFs)
+	v.platformMut.Lock()
+	defer v.platformMut.Unlock()
+	return retrieveVersions(v.versionsFs, v.preservePlatformData)
 }
 
 func (v *staggered) Restore(filepath string, versionTime time.Time) error {
+	if v.preservePlatformData {
+		return errors.New("restore requires indexed platform metadata")
+	}
 	return restoreFile(v.copyRangeMethod, v.versionsFs, v.folderFs, filepath, versionTime, TagFilename)
 }
 

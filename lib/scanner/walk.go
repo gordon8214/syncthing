@@ -30,6 +30,7 @@ import (
 )
 
 type Config struct {
+	RestoredPlatformData func(string) (protocol.PlatformData, bool, error)
 	// Folder for which the walker has been created
 	Folder string
 	// Limit walking to these paths within Dir, or no limit if Sub is empty
@@ -467,6 +468,17 @@ func (w *walker) walkRegular(ctx context.Context, relPath string, info fs.FileIn
 		return err
 	}
 	f = w.updateFileInfo(f, curFile)
+	restored := false
+	if w.RestoredPlatformData != nil {
+		var pd protocol.PlatformData
+		pd, restored, err = w.RestoredPlatformData(relPath)
+		if err != nil {
+			return err
+		}
+		if restored {
+			f.Platform = pd
+		}
+	}
 	f.NoPermissions = w.IgnorePerms
 	f.RawBlockSize = int32(blockSize)
 	l.Debugln(w, "checking:", f)
@@ -474,7 +486,7 @@ func (w *walker) walkRegular(ctx context.Context, relPath string, info fs.FileIn
 	f.New = !hasCurFile
 
 	if hasCurFile {
-		if curFile.IsEquivalentOptional(f, protocol.FileInfoComparison{
+		if !restored && curFile.IsEquivalentOptional(f, protocol.FileInfoComparison{
 			ModTimeWindow:   w.ModTimeWindow,
 			IgnorePerms:     w.IgnorePerms,
 			IgnoreBlocks:    true,

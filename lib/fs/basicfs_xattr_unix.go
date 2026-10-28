@@ -78,9 +78,10 @@ func getXattr(path, name string) ([]byte, error) {
 	}()
 
 	size, err := unix.Lgetxattr(path, name, buf)
-	if errors.Is(err, unix.ERANGE) {
+	if errors.Is(err, unix.ERANGE) || (err == nil && size == len(buf)) {
 		// Buffer was too small. Figure out how large it needs to be, and
-		// allocate.
+		// allocate. macOS resource forks can return a successful partial
+		// read instead of ERANGE, so also check when the buffer is full.
 		size, err = unix.Lgetxattr(path, name, nil)
 		if err != nil {
 			return nil, fmt.Errorf("Lgetxattr %s %q: %w", path, name, err)
@@ -147,7 +148,7 @@ func (f *BasicFilesystem) SetXattr(path string, xattrs []protocol.Xattr, xattrFi
 		if old, ok := currentIdx[xa.Name]; ok && bytes.Equal(xa.Value, current[old].Value) {
 			continue
 		}
-		if err := unix.Lsetxattr(path, xa.Name, xa.Value, 0); err != nil {
+		if err := setXattr(path, xa.Name, xa.Value); err != nil {
 			return fmt.Errorf("set xattrs %s: Setxattr %q: %w", path, xa.Name, err)
 		}
 	}

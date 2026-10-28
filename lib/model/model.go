@@ -2821,12 +2821,57 @@ func (m *model) RestoreFolderVersions(folder string, versions map[string]time.Ti
 	err := m.checkFolderRunningRLocked(folder)
 	fcfg := m.folderCfgs[folder]
 	ver := m.folderVersioners[folder]
+	runner, runnerExists := m.folderRunners.Get(folder)
 	m.mut.RUnlock()
 	if err != nil {
 		return nil, err
 	}
 	if ver == nil {
 		return nil, errNoVersioner
+	}
+
+	if pv, ok := versioner.WithPlatformData(ver); ok {
+		serial, ok := runner.(interface {
+			doInSync(func(context.Context) error) error
+			scanSubdirs(context.Context, []string) error
+		})
+		if !runnerExists || !ok {
+			return nil, errors.New("folder cannot serialize metadata restoration")
+		}
+		restoreErrors := make(map[string]error)
+		err := serial.doInSync(func(ctx context.Context) error {
+			var paths []string
+			for path, stamp := range versions {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				current, _, err := m.sdb.GetDeviceFile(folder, protocol.LocalDeviceID, path)
+				if err == nil {
+					err = pv.RestoreWithPlatformData(path, stamp, current.Platform)
+				}
+				if err != nil {
+					restoreErrors[path] = err
+				} else {
+					paths = append(paths, path)
+				}
+			}
+			if len(paths) > 0 {
+				if err := serial.scanSubdirs(ctx, paths); err != nil {
+					return err
+				}
+				for _, path := range paths {
+					_, pending, err := pv.RestoredPlatformData(path)
+					if err != nil {
+						restoreErrors[path] = err
+					} else if pending {
+						restoreErrors[path] = errors.New("restored metadata remains unindexed; check folder scan errors and ignores")
+					}
+				}
+				return nil
+			}
+			return nil
+		})
+		return restoreErrors, err
 	}
 
 	restoreErrors := make(map[string]error)

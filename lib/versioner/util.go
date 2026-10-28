@@ -76,7 +76,7 @@ func UntagFilename(path string) (string, string) {
 	return name, versionTag
 }
 
-func retrieveVersions(fileSystem fs.Filesystem) (map[string][]FileVersion, error) {
+func retrieveVersions(fileSystem fs.Filesystem, platformData ...bool) (map[string][]FileVersion, error) {
 	files := make(map[string][]FileVersion)
 
 	err := fileSystem.Walk(".", func(path string, f fs.FileInfo, err error) error {
@@ -88,6 +88,10 @@ func retrieveVersions(fileSystem fs.Filesystem) (map[string][]FileVersion, error
 		// Skip walking if we cannot walk...
 		if err != nil {
 			return err
+		}
+
+		if skipPlatformDir(path, platformData) {
+			return fs.SkipDir
 		}
 
 		// Ignore symlinks
@@ -376,7 +380,7 @@ func findAllVersions(fs fs.Filesystem, filePath string) []string {
 	return versions
 }
 
-func clean(ctx context.Context, versionsFs fs.Filesystem, toRemove func([]string, time.Time) []string) error {
+func clean(ctx context.Context, versionsFs fs.Filesystem, toRemove func([]string, time.Time) []string, platformData ...bool) error {
 	l.Debugln("Versioner clean: Cleaning", versionsFs)
 
 	if _, err := versionsFs.Stat("."); fs.IsNotExist(err) {
@@ -397,6 +401,9 @@ func clean(ctx context.Context, versionsFs fs.Filesystem, toRemove func([]string
 		default:
 		}
 
+		if skipPlatformDir(path, platformData) {
+			return fs.SkipDir
+		}
 		if f.IsDir() && !f.IsSymlink() {
 			dirTracker.addDir(path)
 			return nil
@@ -428,7 +435,7 @@ func clean(ctx context.Context, versionsFs fs.Filesystem, toRemove func([]string
 			return ctx.Err()
 		default:
 		}
-		cleanVersions(versionsFs, versionList, toRemove)
+		cleanVersions(versionsFs, versionList, toRemove, platformData...)
 	}
 
 	dirTracker.deleteEmptyDirs(versionsFs)
@@ -437,10 +444,14 @@ func clean(ctx context.Context, versionsFs fs.Filesystem, toRemove func([]string
 	return nil
 }
 
-func cleanVersions(versionsFs fs.Filesystem, versions []string, toRemove func([]string, time.Time) []string) {
+func cleanVersions(versionsFs fs.Filesystem, versions []string, toRemove func([]string, time.Time) []string, platformData ...bool) {
 	l.Debugln("Versioner: Expiring versions", versions)
 	for _, file := range toRemove(versions, time.Now()) {
-		if err := versionsFs.Remove(file); err != nil {
+		remove := versionsFs.Remove
+		if len(platformData) > 0 && platformData[0] {
+			remove = func(path string) error { return removePlatformVersion(versionsFs, path) }
+		}
+		if err := remove(file); err != nil {
 			slog.Warn("Failed to remove versioned file during cleanup", slogutil.FilePath(file), slogutil.Error(err))
 		}
 	}

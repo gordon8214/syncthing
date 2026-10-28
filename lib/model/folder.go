@@ -599,7 +599,9 @@ func (f *folder) newScanBatch() *scanBatch {
 			b.f.sl.Debug("Stopping scan due to folder error", slogutil.Error(err))
 			return err
 		}
-		b.f.updateLocalsFromScanning(fs)
+		if err := b.f.updateLocalsFromScanning(fs); err != nil {
+			return err
+		}
 		clear(b.skipInFindRename)
 		return nil
 	})
@@ -698,6 +700,12 @@ func (f *folder) scanSubdirsChangedAndNew(ctx context.Context, subDirs []string,
 		ScanOwnership:         f.SendOwnership || f.SyncOwnership,
 		ScanXattrs:            f.SendXattrs || f.SyncXattrs,
 		XattrFilter:           f.XattrFilter,
+	}
+	f.model.mut.RLock()
+	pv, preserve := versioner.WithPlatformData(f.model.folderVersioners[f.ID])
+	f.model.mut.RUnlock()
+	if preserve {
+		scanConfig.RestoredPlatformData = pv.RestoredPlatformData
 	}
 	var fchan chan scanner.ScanResult
 	if f.Type == config.FolderTypeReceiveEncrypted {
@@ -1326,6 +1334,18 @@ func (f *folder) ScheduleForceRescan(path string) {
 func (f *folder) updateLocalsFromScanning(fs []protocol.FileInfo) error {
 	if err := f.updateLocals(fs); err != nil {
 		return err
+	}
+	f.model.mut.RLock()
+	pv, preserve := versioner.WithPlatformData(f.model.folderVersioners[f.ID])
+	f.model.mut.RUnlock()
+	if preserve {
+		for _, file := range fs {
+			if !file.Deleted && !file.IsInvalid() && file.Type == protocol.FileInfoTypeFile {
+				if err := pv.CommitRestoredPlatformData(file.Name, file.Platform); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	f.emitDiskChangeEvents(fs, events.LocalChangeDetected)
 	return nil
