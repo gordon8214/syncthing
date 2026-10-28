@@ -129,13 +129,14 @@ func (f *receiveOnlyFolder) revert(ctx context.Context) error {
 			fi.SetDeleted(f.shortID)
 			fi.Version = protocol.Vector{} // if this file ever resurfaces anywhere we want our delete to be strictly older
 		case gf.IsEquivalentOptional(fi, protocol.FileInfoComparison{
-			ModTimeWindow:   f.modTimeWindow,
-			IgnoreFlags:     protocol.FlagLocalReceiveOnly,
-			IgnoreOwnership: !f.SyncOwnership,
-			IgnoreXattrs:    !f.SyncXattrs,
+			ModTimeWindow:      f.modTimeWindow,
+			IgnoreFlags:        protocol.FlagLocalReceiveOnly,
+			IgnoreOwnership:    !f.SyncOwnership,
+			IgnoreXattrs:       !f.SyncXattrs,
+			FilterNativeXattrs: f.XattrFilter.Filter,
 		}):
 			// What we have locally is equivalent to the global file.
-			fi = gf
+			fi = f.filterNativeXattrs(gf)
 		default:
 			// Revert means to throw away our local changes. We reset the
 			// version to the empty vector, which is strictly older than any

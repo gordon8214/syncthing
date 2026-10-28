@@ -458,6 +458,8 @@ type FileInfoComparison struct {
 	IgnoreFlags     FlagLocal
 	IgnoreOwnership bool
 	IgnoreXattrs    bool
+	// FilterNativeXattrs applies only to the current platform, preserving foreign metadata.
+	FilterNativeXattrs func([]Xattr) []Xattr
 }
 
 func (f FileInfo) IsEquivalent(other FileInfo, modTimeWindow time.Duration) bool {
@@ -512,16 +514,16 @@ func (f FileInfo) isEquivalent(other FileInfo, comp FileInfoComparison) bool {
 		}
 	}
 	if !comp.IgnoreXattrs && f.Platform != other.Platform {
-		if !xattrsEqual(f.Platform.Linux, other.Platform.Linux) {
+		if !xattrsEqualFiltered(f.Platform.Linux, other.Platform.Linux, comp.FilterNativeXattrs, build.IsLinux) {
 			return false
 		}
-		if !xattrsEqual(f.Platform.Darwin, other.Platform.Darwin) {
+		if !xattrsEqualFiltered(f.Platform.Darwin, other.Platform.Darwin, comp.FilterNativeXattrs, build.IsDarwin) {
 			return false
 		}
-		if !xattrsEqual(f.Platform.FreeBSD, other.Platform.FreeBSD) {
+		if !xattrsEqualFiltered(f.Platform.FreeBSD, other.Platform.FreeBSD, comp.FilterNativeXattrs, build.IsFreeBSD) {
 			return false
 		}
-		if !xattrsEqual(f.Platform.NetBSD, other.Platform.NetBSD) {
+		if !xattrsEqualFiltered(f.Platform.NetBSD, other.Platform.NetBSD, comp.FilterNativeXattrs, build.IsNetBSD) {
 			return false
 		}
 	}
@@ -721,6 +723,25 @@ func (p *PlatformData) SetXattrs(xattrs []Xattr) {
 	}
 }
 
+// WithFilteredNativeXattrs returns a copy with only the native attribute set
+// filtered. Foreign data and the caller's shared index structures are untouched.
+func (p PlatformData) WithFilteredNativeXattrs(filter func([]Xattr) []Xattr) PlatformData {
+	if filter == nil {
+		return p
+	}
+	switch {
+	case build.IsLinux && p.Linux != nil:
+		p.Linux = &XattrData{Xattrs: filter(p.Linux.Xattrs)}
+	case build.IsDarwin && p.Darwin != nil:
+		p.Darwin = &XattrData{Xattrs: filter(p.Darwin.Xattrs)}
+	case build.IsFreeBSD && p.FreeBSD != nil:
+		p.FreeBSD = &XattrData{Xattrs: filter(p.FreeBSD.Xattrs)}
+	case build.IsNetBSD && p.NetBSD != nil:
+		p.NetBSD = &XattrData{Xattrs: filter(p.NetBSD.Xattrs)}
+	}
+	return p
+}
+
 // MergeWith copies platform data from other, for platforms where it's not
 // already set on p.
 func (p *PlatformData) MergeWith(other *PlatformData) {
@@ -876,6 +897,20 @@ func xattrFromWire(w *bep.Xattr) Xattr {
 		Name:  w.Name,
 		Value: w.Value,
 	}
+}
+
+func xattrsEqualFiltered(a, b *XattrData, filter func([]Xattr) []Xattr, native bool) bool {
+	if filter == nil || !native {
+		return xattrsEqual(a, b)
+	}
+	var aa, bb []Xattr
+	if a != nil {
+		aa = a.Xattrs
+	}
+	if b != nil {
+		bb = b.Xattrs
+	}
+	return xattrsEqual(&XattrData{Xattrs: filter(aa)}, &XattrData{Xattrs: filter(bb)})
 }
 
 func xattrsEqual(a, b *XattrData) bool {

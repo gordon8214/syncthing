@@ -23,7 +23,7 @@ import (
 // Writing extended attributes needs write access to the item on macOS (and for user attributes on Linux), so
 // read-only items must get theirs before, or despite, their final permissions.
 
-var readOnlyTestXattrs = []protocol.Xattr{{Name: "user.synctrain-test-hash", Value: []byte("0123456789abcdef")}}
+var readOnlyTestXattrs = []protocol.Xattr{{Name: "user.synctrain-test-hash#S", Value: []byte("0123456789abcdef")}}
 
 func readOnlyXattrFolder(t *testing.T) (*sendReceiveFolder, fs.Filesystem) {
 	t.Helper()

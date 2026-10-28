@@ -932,6 +932,16 @@ outer:
 // reconcileReceiveOnlyToGlobal merges a locally receive-only changed item
 // back into an equivalent global item, when there is no relevant difference
 // between the two.
+// filterNativeXattrs keeps adopted global metadata consistent with disk scans.
+// Without this, an old peer's excluded attributes get restored to the local index
+// after every receive-only reconciliation or send-only version merge.
+func (f *folder) filterNativeXattrs(fi protocol.FileInfo) protocol.FileInfo {
+	if f.SyncXattrs || f.SendXattrs {
+		fi.Platform = fi.Platform.WithFilteredNativeXattrs(f.XattrFilter.Filter)
+	}
+	return fi
+}
+
 func (f *folder) reconcileReceiveOnlyToGlobal(fi protocol.FileInfo, batch *scanBatch) (bool, error) {
 	if f.Type != config.FolderTypeReceiveOnly && f.Type != config.FolderTypeReceiveEncrypted {
 		return false, nil
@@ -949,17 +959,18 @@ func (f *folder) reconcileReceiveOnlyToGlobal(fi protocol.FileInfo, batch *scanB
 		return false, nil
 	}
 	if !gf.IsEquivalentOptional(fi, protocol.FileInfoComparison{
-		ModTimeWindow:   f.modTimeWindow,
-		IgnorePerms:     f.IgnorePerms,
-		IgnoreBlocks:    f.Type == config.FolderTypeReceiveEncrypted, // receive-encrypted cannot compare block hashes
-		IgnoreFlags:     protocol.FlagLocalReceiveOnly,
-		IgnoreOwnership: !f.SyncOwnership && !f.SendOwnership,
-		IgnoreXattrs:    !f.SyncXattrs && !f.SendXattrs,
+		ModTimeWindow:      f.modTimeWindow,
+		IgnorePerms:        f.IgnorePerms,
+		IgnoreBlocks:       f.Type == config.FolderTypeReceiveEncrypted, // receive-encrypted cannot compare block hashes
+		IgnoreFlags:        protocol.FlagLocalReceiveOnly,
+		IgnoreOwnership:    !f.SyncOwnership && !f.SendOwnership,
+		IgnoreXattrs:       !f.SyncXattrs && !f.SendXattrs,
+		FilterNativeXattrs: f.XattrFilter.Filter,
 	}) {
 		return false, nil
 	}
 	f.sl.Debug("Merging identical locally changed item with global", slogutil.FilePath(fi.Name))
-	return batch.Update(gf)
+	return batch.Update(f.filterNativeXattrs(gf))
 }
 
 func (f *folder) findRename(ctx context.Context, file protocol.FileInfo, batch *scanBatch) (protocol.FileInfo, bool) {

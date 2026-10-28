@@ -1522,7 +1522,7 @@ func TestXattrFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		f := XattrFilter{Entries: tc.filter}
+		f := XattrFilter{Entries: tc.filter, MacOSMode: MacOSXattrAll}
 		var out []string
 		for _, s := range tc.in {
 			if f.Permit(s) {

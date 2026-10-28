@@ -3735,7 +3735,7 @@ angular.module('syncthing.core')
             var filterEntries = xattrFilter.entries;
             // No entries present, default is thus 'allow'
             if (filterEntries.length === 0) {
-                return $translate.instant('permit');
+                return xattrFilter.macOSMode === 'all' ? $translate.instant('permit') : $translate.instant('Syncable on macOS; permit on other operating systems');
             }
             // If any rule is present and the last entry isn't a wild-card, the default is deny.
             if (filterEntries[filterEntries.length -1].match !== '*') {

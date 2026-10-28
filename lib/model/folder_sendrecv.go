@@ -1067,13 +1067,15 @@ func (f *sendReceiveFolder) renameFile(cur, source, target protocol.FileInfo, db
 	default:
 		var fi protocol.FileInfo
 		if fi, err = scanner.CreateFileInfo(stat, target.Name, f.mtimefs, f.SyncOwnership, f.SyncXattrs, f.XattrFilter); err == nil {
+			fi.Platform.MergeWith(&curTarget.Platform)
 			if !fi.IsEquivalentOptional(curTarget, protocol.FileInfoComparison{
-				ModTimeWindow:   f.modTimeWindow,
-				IgnorePerms:     f.IgnorePerms,
-				IgnoreBlocks:    true,
-				IgnoreFlags:     protocol.LocalAllFlags,
-				IgnoreOwnership: !f.SyncOwnership,
-				IgnoreXattrs:    !f.SyncXattrs,
+				ModTimeWindow:      f.modTimeWindow,
+				IgnorePerms:        f.IgnorePerms,
+				IgnoreBlocks:       true,
+				IgnoreFlags:        protocol.LocalAllFlags,
+				IgnoreOwnership:    !f.SyncOwnership,
+				IgnoreXattrs:       !f.SyncXattrs,
+				FilterNativeXattrs: f.XattrFilter.Filter,
 			}) {
 				// Target changed
 				scanChan <- target.Name
@@ -1875,6 +1877,7 @@ loop:
 				lastFile = job.file
 			}
 
+			job.file = f.filterNativeXattrs(job.file)
 			job.file.Sequence = 0
 
 			batch.Append(job.file)
@@ -2103,13 +2106,15 @@ func (f *sendReceiveFolder) deleteDirOnDiskHandleChildren(dir string, scanChan c
 			hasToBeScanned = true
 			return nil //nolint:nilerr
 		}
+		diskFile.Platform.MergeWith(&cf.Platform)
 		if !cf.IsEquivalentOptional(diskFile, protocol.FileInfoComparison{
-			ModTimeWindow:   f.modTimeWindow,
-			IgnorePerms:     f.IgnorePerms,
-			IgnoreBlocks:    true,
-			IgnoreFlags:     protocol.LocalAllFlags,
-			IgnoreOwnership: !f.SyncOwnership,
-			IgnoreXattrs:    !f.SyncXattrs,
+			ModTimeWindow:      f.modTimeWindow,
+			IgnorePerms:        f.IgnorePerms,
+			IgnoreBlocks:       true,
+			IgnoreFlags:        protocol.LocalAllFlags,
+			IgnoreOwnership:    !f.SyncOwnership,
+			IgnoreXattrs:       !f.SyncXattrs,
+			FilterNativeXattrs: f.XattrFilter.Filter,
 		}) {
 			// File on disk changed compared to what we have in db
 			// -> schedule scan.
@@ -2178,13 +2183,17 @@ func (f *sendReceiveFolder) scanIfItemChanged(name string, stat fs.FileInfo, ite
 	if err != nil {
 		return fmt.Errorf("comparing item on disk to db: %w", err)
 	}
+	// Foreign metadata cannot be re-read on this filesystem. As in a scan,
+	// retain its indexed value before comparing native on-disk information.
+	statItem.Platform.MergeWith(&item.Platform)
 	if !statItem.IsEquivalentOptional(item, protocol.FileInfoComparison{
-		ModTimeWindow:   f.modTimeWindow,
-		IgnorePerms:     f.IgnorePerms,
-		IgnoreBlocks:    true,
-		IgnoreFlags:     protocol.LocalAllFlags,
-		IgnoreOwnership: fromDelete || !f.SyncOwnership,
-		IgnoreXattrs:    fromDelete || !f.SyncXattrs,
+		ModTimeWindow:      f.modTimeWindow,
+		IgnorePerms:        f.IgnorePerms,
+		IgnoreBlocks:       true,
+		IgnoreFlags:        protocol.LocalAllFlags,
+		IgnoreOwnership:    fromDelete || !f.SyncOwnership,
+		IgnoreXattrs:       fromDelete || !f.SyncXattrs,
+		FilterNativeXattrs: f.XattrFilter.Filter,
 	}) {
 		return errModified
 	}

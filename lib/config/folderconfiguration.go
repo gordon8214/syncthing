@@ -97,11 +97,12 @@ type FolderConfiguration struct {
 
 // Extended attribute filter. This is a list of patterns to match (glob
 // style), each with an action (permit or deny). First match is used. If the
-// filter is empty, all strings are permitted. If the filter is non-empty,
+// filter is empty, the platform default policy is used (syncable on macOS). If the filter is non-empty,
 // the default action becomes deny. To counter this, you can use the "*"
 // pattern to match all strings at the end of the filter. There are also
 // limits on the size of accepted attributes.
 type XattrFilter struct {
+	MacOSMode          MacOSXattrMode     `json:"macOSMode" xml:"macOSMode"`
 	Entries            []XattrFilterEntry `json:"entries" xml:"entry"`
 	MaxSingleEntrySize int                `json:"maxSingleEntrySize" xml:"maxSingleEntrySize" default:"1024"`
 	MaxTotalSize       int                `json:"maxTotalSize" xml:"maxTotalSize" default:"4096"`
@@ -379,7 +380,7 @@ func (f *FolderConfiguration) CheckAvailableSpace(req uint64) error {
 
 func (f XattrFilter) Permit(s string) bool {
 	if len(f.Entries) == 0 {
-		return true
+		return f.MacOSMode == MacOSXattrAll || fs.IsXattrSyncable(s)
 	}
 
 	for _, entry := range f.Entries {
@@ -388,6 +389,11 @@ func (f XattrFilter) Permit(s string) bool {
 		}
 	}
 	return false
+}
+
+// Filter applies the same policy to indexed metadata and filesystem attributes.
+func (f XattrFilter) Filter(attrs []protocol.Xattr) []protocol.Xattr {
+	return fs.FilterXattrs(attrs, f)
 }
 
 func (f XattrFilter) GetMaxSingleEntrySize() int {

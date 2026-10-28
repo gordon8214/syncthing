@@ -73,15 +73,16 @@ func (f *sendOnlyFolder) pull(ctx context.Context) (bool, error) {
 		}
 
 		if !file.IsEquivalentOptional(curFile, protocol.FileInfoComparison{
-			ModTimeWindow:   f.modTimeWindow,
-			IgnorePerms:     f.IgnorePerms,
-			IgnoreOwnership: !f.SyncOwnership,
-			IgnoreXattrs:    !f.SyncXattrs,
+			ModTimeWindow:      f.modTimeWindow,
+			IgnorePerms:        f.IgnorePerms,
+			IgnoreOwnership:    !f.SyncOwnership,
+			IgnoreXattrs:       !f.SyncXattrs,
+			FilterNativeXattrs: f.XattrFilter.Filter,
 		}) {
 			continue
 		}
 
-		batch.Append(file)
+		batch.Append(f.filterNativeXattrs(file))
 		l.Debugln(f, "Merging versions of identical file", file)
 	}
 

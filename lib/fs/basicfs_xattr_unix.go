@@ -31,7 +31,7 @@ func (f *BasicFilesystem) GetXattr(path string, xattrFilter XattrFilter) ([]prot
 	}
 
 	res := make([]protocol.Xattr, 0, len(attrs))
-	var totSize int
+	total := 0
 	for _, attr := range attrs {
 		if !xattrFilter.Permit(attr) {
 			l.Debugf("get xattr %s: skipping attribute %q denied by filter", path, attr)
@@ -46,15 +46,14 @@ func (f *BasicFilesystem) GetXattr(path string, xattrFilter XattrFilter) ([]prot
 		} else if err != nil {
 			return nil, fmt.Errorf("get xattr %s: %w", path, err)
 		}
-		if max := xattrFilter.GetMaxSingleEntrySize(); max > 0 && len(attr)+len(val) > max {
-			l.Debugf("get xattr %s: attribute %q exceeds max size", path, attr)
+		size := len(attr) + len(val)
+		if max := xattrFilter.GetMaxSingleEntrySize(); max > 0 && size > max {
 			continue
 		}
-		totSize += len(attr) + len(val)
-		if max := xattrFilter.GetMaxTotalSize(); max > 0 && totSize > max {
-			l.Debugf("get xattr %s: attribute %q would cause max size to be exceeded", path, attr)
+		if max := xattrFilter.GetMaxTotalSize(); max > 0 && size > max-total {
 			continue
 		}
+		total += size
 		res = append(res, protocol.Xattr{
 			Name:  attr,
 			Value: val,
@@ -113,6 +112,9 @@ func getXattr(path, name string) ([]byte, error) {
 }
 
 func (f *BasicFilesystem) SetXattr(path string, xattrs []protocol.Xattr, xattrFilter XattrFilter) error {
+	// Apply the receiving policy too: peers may still send excluded attributes.
+	xattrs = FilterXattrs(xattrs, xattrFilter)
+
 	// Index the new attribute set.
 	xattrsIdx := make(map[string]int)
 	for i, xa := range xattrs {

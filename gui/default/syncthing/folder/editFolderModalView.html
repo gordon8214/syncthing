@@ -409,6 +409,14 @@
               <p translate class="help-block">
                 To permit a rule, have the checkbox checked. To deny a rule, leave it unchecked.
               </p>
+              <div class="form-group">
+                <label for="macOSXattrMode" translate>macOS extended attributes</label>
+                <select id="macOSXattrMode" class="form-control" ng-model="currentFolder.xattrFilter.macOSMode">
+                  <option value="syncable" translate>Syncable attributes (recommended)</option>
+                  <option value="all" translate>All attributes</option>
+                </select>
+                <p class="help-block" translate>Without explicit filter rules, macOS syncs attributes allowed by Apple's sync policy, including Finder info and resource forks. All attributes also includes unmarked application metadata. Explicit rules override this default. Other operating systems are unaffected.</p>
+              </div>
               <label translate>Active filter rules</label>
               <table class="table table-condensed">
                 <colgroup>
