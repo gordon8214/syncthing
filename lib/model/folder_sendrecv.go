@@ -666,15 +666,17 @@ func (f *sendReceiveFolder) handleDir(file protocol.FileInfo, dbUpdateChan chan<
 	// The directory already exists, so we just correct the metadata. (We
 	// don't handle modification times on directories, because that sucks...)
 	// It's OK to change mode bits on stuff within non-writable directories.
+	// Extended attributes and ownership come first: writing attributes needs
+	// write access, which the new permissions may not give.
+	if err := f.setPlatformData(&file, file.Name); err != nil {
+		f.newPullError(file.Name, fmt.Errorf("handling dir (setting metadata): %w", err))
+		return
+	}
 	if !f.IgnorePerms && !file.NoPermissions {
 		if err := f.mtimefs.Chmod(file.Name, mode|(info.Mode()&retainBits)); err != nil {
 			f.newPullError(file.Name, fmt.Errorf("handling dir (setting permissions): %w", err))
 			return
 		}
-	}
-	if err := f.setPlatformData(&file, file.Name); err != nil {
-		f.newPullError(file.Name, fmt.Errorf("handling dir (setting metadata): %w", err))
-		return
 	}
 	dbUpdateChan <- dbUpdateJob{file, dbUpdateHandleDir}
 }
@@ -1333,16 +1335,18 @@ func (f *sendReceiveFolder) shortcutFile(file, curFile protocol.FileInfo, dbUpda
 			return
 		}
 	}
+	// Extended attributes and ownership before permissions: writing
+	// attributes needs write access, which the new permissions may not give
+	if err := f.setPlatformData(&file, file.Name); err != nil {
+		f.newPullError(file.Name, fmt.Errorf("shortcut file (setting metadata): %w", err))
+		return
+	}
+
 	if !f.IgnorePerms && !file.NoPermissions {
 		if err = f.mtimefs.Chmod(file.Name, fs.FileMode(file.Permissions&0o777)); err != nil {
 			f.newPullError(file.Name, fmt.Errorf("shortcut file (setting permissions): %w", err))
 			return
 		}
-	}
-
-	if err := f.setPlatformData(&file, file.Name); err != nil {
-		f.newPullError(file.Name, fmt.Errorf("shortcut file (setting metadata): %w", err))
-		return
 	}
 
 	// Still need to re-write the trailer with the new encrypted fileinfo.
@@ -1710,16 +1714,18 @@ loop:
 }
 
 func (f *sendReceiveFolder) performFinish(file, curFile protocol.FileInfo, hasCurFile bool, tempName string, dbUpdateChan chan<- dbUpdateJob, scanChan chan<- string) error {
+	// Set file xattrs and ownership, while the temporary file is still
+	// writable: writing extended attributes needs write access, which the
+	// final permissions may not give (read-only files such as git objects).
+	if err := f.setPlatformData(&file, tempName); err != nil {
+		return fmt.Errorf("setting metadata: %w", err)
+	}
+
 	// Set the correct permission bits on the new file
 	if !f.IgnorePerms && !file.NoPermissions {
 		if err := f.mtimefs.Chmod(tempName, fs.FileMode(file.Permissions&0o777)); err != nil {
 			return fmt.Errorf("setting permissions: %w", err)
 		}
-	}
-
-	// Set file xattrs and ownership.
-	if err := f.setPlatformData(&file, tempName); err != nil {
-		return fmt.Errorf("setting metadata: %w", err)
 	}
 
 	if stat, err := f.mtimefs.Lstat(file.Name); err == nil {
@@ -2214,11 +2220,15 @@ func (f *sendReceiveFolder) checkToBeDeleted(file, cur protocol.FileInfo, hasCur
 
 // setPlatformData makes adjustments to the metadata that should happen for
 // all types (files, directories, symlinks). This should be one of the last
-// things we do to a file when syncing changes to it.
+// things we do to a file when syncing changes to it, but before setting its
+// permissions, which may not allow writing extended attributes.
 func (f *sendReceiveFolder) setPlatformData(file *protocol.FileInfo, name string) error {
 	if f.SyncXattrs {
-		// Set extended attributes.
-		if err := f.mtimefs.SetXattr(name, file.Platform.Xattrs(), f.XattrFilter); errors.Is(err, fs.ErrXattrsNotSupported) {
+		// Set extended attributes, also on items that are already read-only.
+		err := fs.WithOwnerWrite(f.mtimefs, name, func() error {
+			return f.mtimefs.SetXattr(name, file.Platform.Xattrs(), f.XattrFilter)
+		})
+		if errors.Is(err, fs.ErrXattrsNotSupported) {
 			f.sl.Debug("Cannot set xattrs (not supported)", slogutil.FilePath(file.Name), slogutil.Error(err))
 		} else if err != nil {
 			return err

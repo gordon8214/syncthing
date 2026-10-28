@@ -271,3 +271,29 @@ func TestPlatformHistoryFirstArchiveInSubdirectory(t *testing.T) {
 		t.Fatalf("nested metadata mismatch %v %v", ok, err)
 	}
 }
+
+func TestPlatformHistoryReadOnlyFile(t *testing.T) {
+	// Writing the platform reference needs write access to the version on
+	// macOS; read-only files (such as git objects) keep their mode
+	if os.Geteuid() == 0 {
+		t.Skip("permissions don't restrict root")
+	}
+	for _, copyOnly := range []bool{true, false} {
+		v := historyVersioner(t)
+		writeHistoryFile(t, v, "object", "read-only")
+		if err := v.folderFs.Chmod("object", 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.ArchiveWithPlatformData("object", historyPD(1), copyOnly); err != nil {
+			t.Fatalf("archiving (copy %v): %v", copyOnly, err)
+		}
+		ver := onlyVersion(t, v, "object")
+		if err := v.RestoreWithPlatformData("object", ver.VersionTime, historyPD(2)); err != nil {
+			t.Fatalf("restoring (copy %v): %v", copyOnly, err)
+		}
+		info, err := v.folderFs.Stat("object")
+		if err != nil || info.Mode()&0o777 != 0o400 {
+			t.Fatalf("read-only mode lost (copy %v): %v %v", copyOnly, info, err)
+		}
+	}
+}

@@ -87,7 +87,10 @@ func writePlatformRef(fsys fs.Filesystem, name string, ref platformRef) error {
 	if err != nil {
 		return err
 	}
-	if err := fsys.SetXattr(name, []protocol.Xattr{{Name: platformRefName, Value: data}}, platformRefFilter{}); err != nil {
+	// Versions keep their file's permissions, which may be read-only
+	if err := fs.WithOwnerWrite(fsys, name, func() error {
+		return fsys.SetXattr(name, []protocol.Xattr{{Name: platformRefName, Value: data}}, platformRefFilter{})
+	}); err != nil {
 		return err
 	}
 	file, err := fsys.Open(name)
@@ -223,7 +226,7 @@ func (v *staggered) archivePlatformData(path string, pd protocol.PlatformData, c
 		stamp = stamp.Add(time.Second)
 	}
 	if err = v.folderFs.Rename(source, filepath.Join(DefaultPath, dest)); err != nil {
-		_ = v.folderFs.SetXattr(source, nil, platformRefFilter{})
+		_ = fs.WithOwnerWrite(v.folderFs, source, func() error { return v.folderFs.SetXattr(source, nil, platformRefFilter{}) })
 		return "", err
 	}
 	published = true
@@ -339,7 +342,7 @@ func (v *staggered) CommitRestoredPlatformData(path string, pd protocol.Platform
 	if !reflect.DeepEqual(saved, pd) {
 		return errors.New("restored platform metadata not indexed")
 	}
-	if err = v.folderFs.SetXattr(path, nil, platformRefFilter{}); err != nil {
+	if err = fs.WithOwnerWrite(v.folderFs, path, func() error { return v.folderFs.SetXattr(path, nil, platformRefFilter{}) }); err != nil {
 		return err
 	}
 	return errors.Join(v.versionsFs.Remove(platformBlob(ref)), v.versionsFs.Remove(platformPending(ref)))
