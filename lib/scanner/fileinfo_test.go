@@ -11,6 +11,8 @@ import (
 	"context"
 	"testing"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/syncthing/syncthing/lib/fs"
 	"github.com/syncthing/syncthing/lib/protocol"
 )
@@ -194,5 +196,83 @@ func TestFileInfoForProtocolBlockSizes(t *testing.T) {
 	huge := []protocol.BlockInfo{{Offset: 0, Size: int(size), Hash: make([]byte, 32)}}
 	if got, err := FileInfoFor(context.Background(), cfg, "huge", huge); err == nil {
 		t.Fatalf("accepted a block larger than the largest block size: %v", got.RawBlockSize)
+	}
+}
+
+// otherForm returns name in the Unicode normalization form the platform's
+// file names don't use.
+func otherForm(name string) string {
+	if normalizePath(name) == norm.NFD.String(name) {
+		return norm.NFC.String(name)
+	}
+	return norm.NFD.String(name)
+}
+
+func TestFileInfoForNames(t *testing.T) {
+	testFs := fs.NewFilesystem(fs.FilesystemTypeBasic, t.TempDir())
+	native := normalizePath("café.txt")
+	if native == otherForm(native) {
+		t.Fatal("test name has a single normalization form")
+	}
+	writeTestFile(t, testFs, native, 10)
+	cfg := Config{Filesystem: testFs, ShortID: protocol.LocalDeviceID.Short()}
+
+	// A name in the other form, or not clean, gets the form a scan gives it.
+	for _, name := range []string{native, otherForm(native), "./" + otherForm(native), "sub/../" + native} {
+		got, err := FileInfoFor(context.Background(), cfg, name, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		if got.Name != native {
+			t.Errorf("%q: named %q, a scan names it %q", name, got.Name, native)
+		}
+	}
+	walked := walkDir(testFs, ".", nil, nil, 0)
+	if len(walked) != 1 || walked[0].Name != native {
+		t.Fatalf("walk produced %v", walked)
+	}
+
+	// Names a scan skips are refused, also when the item exists.
+	if err := testFs.Mkdir(".stfolder", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testFs.Mkdir(".stversions", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testFs.Mkdir("sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".stignore", ".stversions/old", ".syncthing.file.tmp", "~syncthing~file.tmp", "sub/.syncthing.file.tmp"} {
+		writeTestFile(t, testFs, name, 1)
+	}
+	for _, name := range []string{
+		".stfolder", ".stignore", ".stversions", ".stversions/old", ".syncthing.file.tmp", "~syncthing~file.tmp",
+		"sub/.syncthing.file.tmp", ".", "", "..", "../" + native, "/" + native, "\xff",
+	} {
+		if got, err := FileInfoFor(context.Background(), cfg, name, nil); err == nil {
+			t.Errorf("%q: accepted as %q", name, got.Name)
+		}
+	}
+}
+
+func TestFileInfoForKeepsTheCurrentEntry(t *testing.T) {
+	testFs := fs.NewFilesystem(fs.FilesystemTypeBasic, t.TempDir())
+	writeTestFile(t, testFs, "file", 10)
+	short := protocol.LocalDeviceID.Short()
+	// A vector with this device's counter, which Update raises in place
+	cur := protocol.FileInfo{Name: "file", Type: protocol.FileInfoTypeFile, Version: protocol.Vector{}.Update(short).Update(42)}
+	before := cur.Version.Copy()
+	cfg := Config{Filesystem: testFs, ShortID: short, CurrentFiler: fixedCurrentFiler{"file": cur}}
+	for range 2 {
+		got, err := FileInfoFor(context.Background(), cfg, "file", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Version.Compare(before) != protocol.Greater {
+			t.Fatalf("version %v not after %v", got.Version, before)
+		}
+	}
+	if !cur.Version.Equal(before) || cur.Version.Counter(short) != before.Counter(short) {
+		t.Fatalf("current entry's version changed from %v to %v", before, cur.Version)
 	}
 }

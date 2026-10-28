@@ -10,8 +10,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
+	"unicode/utf8"
 
+	"github.com/syncthing/syncthing/lib/fs"
 	"github.com/syncthing/syncthing/lib/protocol"
 )
 
@@ -35,9 +38,35 @@ func BlockSizeFor(size int64, curFile protocol.FileInfo, hasCurFile bool) int {
 	return blockSize
 }
 
+// NameFor returns name, a path relative to the folder root, in the form a
+// scan reports it and the folder's index returns it: clean, with the
+// platform's path separators and Unicode normalization (NFD on macOS and iOS,
+// NFC elsewhere). Names from other devices are NFC, which a scan on macOS
+// never reports. It fails for a name no scan reports: one that is not valid
+// UTF-8 or not a path below the folder root.
+func NameFor(name string) (string, error) {
+	if !utf8.ValidString(name) {
+		return "", fmt.Errorf("%q: %w", name, errUTF8Invalid)
+	}
+	native := filepath.Clean(normalizePath(name))
+	if native == "." || !filepath.IsLocal(native) {
+		return "", fmt.Errorf("%q: %w", name, errNotInFolder)
+	}
+	return native, nil
+}
+
+var (
+	errNotInFolder = errors.New("not a path below the folder root")
+	errNotIndexed  = errors.New("scans skip internal and temporary files")
+)
+
 // FileInfoFor returns the FileInfo a scan with cfg would produce for the
 // regular file or directory at name, as a new local version of the entry
 // cfg.CurrentFiler returns. It reports an entry even when it is unchanged.
+//
+// The entry is named as NameFor converts name, which may differ from name: in
+// a scan, a name in another form is renamed or skipped. Internal and
+// temporary files, which a scan skips, are refused.
 //
 // For a regular file, blocks may hold the file's block list, for instance
 // one hashed with BlockSizeFor's block size or the list of a file it was
@@ -52,6 +81,13 @@ func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol
 	}
 	w := &walker{cfg}
 
+	name, err := NameFor(name)
+	if err != nil {
+		return protocol.FileInfo{}, err
+	}
+	if fs.IsInternal(name) || fs.IsTemporary(name) {
+		return protocol.FileInfo{}, fmt.Errorf("%s: %w", name, errNotIndexed)
+	}
 	info, err := cfg.Filesystem.Lstat(name)
 	if err != nil {
 		return protocol.FileInfo{}, err
@@ -60,6 +96,9 @@ func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol
 		return protocol.FileInfo{}, fmt.Errorf("%s: not a regular file or directory", name)
 	}
 	curFile, hasCurFile := cfg.CurrentFiler.CurrentFile(name)
+	// The new version is built on the current one's vector, which the
+	// CurrentFiler may share with others (Update changes it in place).
+	curFile.Version = curFile.Version.Copy()
 
 	f, err := CreateFileInfo(info, name, cfg.Filesystem, cfg.ScanOwnership, cfg.ScanXattrs, cfg.XattrFilter)
 	if err != nil {

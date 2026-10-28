@@ -33,7 +33,10 @@ type FolderHandle interface {
 	CurrentFile(name string) (protocol.FileInfo, bool, error)
 	GlobalFile(name string) (protocol.FileInfo, bool, error)
 	// IsIgnored reports whether the folder's ignore patterns, as loaded when
-	// the function was called, exclude name.
+	// the function was called, exclude name, which it first converts to the
+	// form a scan matches them with (scanner.NameFor). A name that no scan
+	// indexes (internal, temporary, or one NameFor refuses) counts as
+	// ignored.
 	IsIgnored(name string) bool
 	// HasVersioner reports whether the folder archives replaced and deleted
 	// files.
@@ -147,6 +150,12 @@ func (h *folderHandle) GlobalFile(name string) (protocol.FileInfo, bool, error) 
 }
 
 func (h *folderHandle) IsIgnored(name string) bool {
+	name, err := scanner.NameFor(name)
+	if err != nil {
+		return true
+	}
+	// The ignore patterns are in the same form; Match also excludes
+	// internal and temporary files.
 	return h.f.ignores.Match(name).IsIgnored()
 }
 

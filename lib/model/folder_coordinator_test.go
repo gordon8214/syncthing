@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/scanner"
@@ -267,6 +269,57 @@ func TestRunInFolderLoopArchivesPlatformHistory(t *testing.T) {
 	must(t, err)
 	if len(versions["file.txt"]) != 1 {
 		t.Fatalf("replaced version not archived: %v", versions)
+	}
+}
+
+// The handle takes names in either Unicode normalization form, such as the
+// NFC names of other devices on macOS, where scans report NFD names: the
+// database normalizes the names it looks up, and IsIgnored converts its name
+// to the form of the ignore patterns.
+func TestRunInFolderLoopNames(t *testing.T) {
+	m, fcfg := setupCoordinatedFolder(t, func(c *config.FolderConfiguration) {
+		c.Versioning = config.VersioningConfiguration{Type: "staggered", Params: map[string]string{"preservePlatformData": "true"}}
+		c.IgnorePerms = true
+	})
+	native, err := scanner.NameFor("café.txt")
+	must(t, err)
+	other := norm.NFD.String(native)
+	if other == native {
+		other = norm.NFC.String(native)
+	}
+	must(t, os.WriteFile(filepath.Join(fcfg.Path, native), []byte("contents"), 0o644))
+	must(t, m.SetIgnores(fcfg.ID, []string{"crème*"}))
+	must(t, m.ScanFolder(fcfg.ID))
+	err = m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+		for _, name := range []string{native, other} {
+			if cur, ok, err := h.CurrentFile(name); err != nil || !ok || cur.Name != native {
+				return fmt.Errorf("current file %q: %v %v %v", name, cur.Name, ok, err)
+			}
+			if global, ok, err := h.GlobalFile(name); err != nil || !ok || global.Name != native {
+				return fmt.Errorf("global file %q: %v %v %v", name, global.Name, ok, err)
+			}
+			if h.IsIgnored(name) {
+				return fmt.Errorf("%q ignored", name)
+			}
+		}
+		for _, name := range []string{norm.NFC.String("crème.txt"), norm.NFD.String("crème.txt")} {
+			if !h.IsIgnored(name) {
+				return fmt.Errorf("%q not ignored", name)
+			}
+		}
+		// Names no scan indexes
+		for _, name := range []string{".stversions/x", ".syncthing.x.tmp", "../x", ".", "\xff"} {
+			if !h.IsIgnored(name) {
+				return fmt.Errorf("%q not ignored", name)
+			}
+		}
+		return h.Archive(other)
+	})
+	must(t, err)
+	versions, err := m.folderVersioners[fcfg.ID].GetVersions()
+	must(t, err)
+	if len(versions) != 1 {
+		t.Fatalf("file not archived: %v", versions)
 	}
 }
 
