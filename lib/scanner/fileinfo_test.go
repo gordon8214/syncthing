@@ -68,6 +68,17 @@ func TestFileInfoForMatchesWalk(t *testing.T) {
 	if _, err := FileInfoFor(context.Background(), cfg, "file", got.Blocks[:1]); err == nil {
 		t.Fatal("accepted a block list for a shorter file")
 	}
+
+	// A list with another block size, as a renamed file keeps, is used with
+	// its own block size.
+	larger, err := Blocks(context.Background(), bytes.NewReader(bytes.Repeat([]byte("x"), 300<<10)), 256<<10, 300<<10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := FileInfoFor(context.Background(), cfg, "file", larger)
+	if err != nil || kept.RawBlockSize != 256<<10 || len(kept.Blocks) != 2 {
+		t.Fatalf("kept block list: %v %v", kept, err)
+	}
 }
 
 func TestFileInfoForNewVersion(t *testing.T) {

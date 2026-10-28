@@ -38,10 +38,10 @@ func BlockSizeFor(size int64, curFile protocol.FileInfo, hasCurFile bool) int {
 // regular file or directory at name, as a new local version of the entry
 // cfg.CurrentFiler returns. It reports an entry even when it is unchanged.
 //
-// For a regular file, blocks may hold the file's block list, hashed with
-// BlockSizeFor's block size; when nil, the file is hashed. The caller is
-// responsible for the file not changing between that and committing the
-// result.
+// For a regular file, blocks may hold the file's block list, for instance
+// one hashed with BlockSizeFor's block size or the list of a file it was
+// renamed from; when nil, the file is hashed. The caller is responsible for
+// the file not changing between that and committing the result.
 func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol.BlockInfo) (protocol.FileInfo, error) {
 	if cfg.CurrentFiler == nil {
 		cfg.CurrentFiler = noCurrentFiler{}
@@ -84,6 +84,12 @@ func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol
 	}
 
 	blockSize := BlockSizeFor(info.Size(), curFile, hasCurFile)
+	if len(blocks) > 1 {
+		// The block size of a given list is that of its blocks
+		blockSize = blocks[0].Size
+	} else if len(blocks) == 1 {
+		blockSize = max(blockSize, blocks[0].Size)
+	}
 	f.RawBlockSize = int32(blockSize)
 	if blocks == nil {
 		if blocks, err = HashFile(ctx, cfg.Folder, cfg.Filesystem, name, blockSize, nil); err != nil {
