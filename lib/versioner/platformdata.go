@@ -326,8 +326,21 @@ func (v *staggered) RestoredPlatformData(path string) (protocol.PlatformData, bo
 		return protocol.PlatformData{}, false, err
 	}
 	pd, err := v.loadPlatformData(ref)
-	return pd, true, err
+	if err != nil {
+		return pd, true, err
+	}
+	return v.filterRestoredPlatformData(pd), true, nil
 }
+
+// filterRestoredPlatformData applies the source policy before a restore can
+// replace the scanner's metadata. The saved blob and foreign data stay intact.
+func (v *staggered) filterRestoredPlatformData(pd protocol.PlatformData) protocol.PlatformData {
+	if v.platformXattrFilter != nil {
+		return pd.WithFilteredNativeXattrs(v.platformXattrFilter.Filter)
+	}
+	return pd
+}
+
 func (v *staggered) CommitRestoredPlatformData(path string, pd protocol.PlatformData) error {
 	v.platformMut.Lock()
 	defer v.platformMut.Unlock()
@@ -339,7 +352,7 @@ func (v *staggered) CommitRestoredPlatformData(path string, pd protocol.Platform
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(saved, pd) {
+	if !reflect.DeepEqual(v.filterRestoredPlatformData(saved), pd) {
 		return errors.New("restored platform metadata not indexed")
 	}
 	if err = fs.WithOwnerWrite(v.folderFs, path, func() error { return v.folderFs.SetXattr(path, nil, platformRefFilter{}) }); err != nil {

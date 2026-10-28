@@ -31,6 +31,7 @@ type interval struct {
 
 type staggered struct {
 	preservePlatformData bool
+	platformXattrFilter  *config.XattrFilter
 	platformMut          sync.Mutex
 	lastPlatformGC       time.Time
 	folderFs             fs.Filesystem
@@ -59,6 +60,12 @@ func newStaggered(cfg config.FolderConfiguration) Versioner {
 			{7 * 24 * 60 * 60, maxAge},        // next year -> 1 week between versions
 		},
 		copyRangeMethod: cfg.CopyRangeMethod.ToFS(),
+	}
+
+	if cfg.SyncXattrs || cfg.SendXattrs {
+		filter := cfg.XattrFilter
+		filter.Entries = slices.Clone(filter.Entries)
+		s.platformXattrFilter = &filter
 	}
 
 	l.Debugf("instantiated %#v", s)
