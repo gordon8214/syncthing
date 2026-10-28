@@ -447,21 +447,7 @@ func (w *walker) handleItem(ctx context.Context, path string, info fs.FileInfo, 
 func (w *walker) walkRegular(ctx context.Context, relPath string, info fs.FileInfo, toHashChan chan<- protocol.FileInfo) error {
 	curFile, hasCurFile := w.CurrentFiler.CurrentFile(relPath)
 
-	blockSize := protocol.BlockSize(info.Size())
-
-	if hasCurFile {
-		// Check if we should retain current block size.
-		curBlockSize := curFile.BlockSize()
-		if blockSize > curBlockSize && blockSize/curBlockSize <= 2 {
-			// New block size is larger, but not more than twice larger.
-			// Retain.
-			blockSize = curBlockSize
-		} else if curBlockSize > blockSize && curBlockSize/blockSize <= 2 {
-			// Old block size is larger, but not more than twice larger.
-			// Retain.
-			blockSize = curBlockSize
-		}
-	}
+	blockSize := BlockSizeFor(info.Size(), curFile, hasCurFile)
 
 	f, err := CreateFileInfo(info, relPath, w.Filesystem, w.ScanOwnership, w.ScanXattrs, w.XattrFilter)
 	if err != nil {

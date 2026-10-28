@@ -674,14 +674,8 @@ func (b *scanBatch) Update(fi protocol.FileInfo) (bool, error) {
 	return true, nil
 }
 
-func (f *folder) scanSubdirsChangedAndNew(ctx context.Context, subDirs []string, batch *scanBatch) (int, error) {
-	changes := 0
-
-	// If we return early e.g. due to a folder health error, the scan needs
-	// to be cancelled.
-	scanCtx, scanCancel := context.WithCancel(ctx)
-	defer scanCancel()
-
+// scanConfig returns the scanner configuration for scanning subDirs.
+func (f *folder) scanConfig(subDirs []string) scanner.Config {
 	scanConfig := scanner.Config{
 		Folder:                f.ID,
 		Subs:                  subDirs,
@@ -707,6 +701,18 @@ func (f *folder) scanSubdirsChangedAndNew(ctx context.Context, subDirs []string,
 	if preserve {
 		scanConfig.RestoredPlatformData = pv.RestoredPlatformData
 	}
+	return scanConfig
+}
+
+func (f *folder) scanSubdirsChangedAndNew(ctx context.Context, subDirs []string, batch *scanBatch) (int, error) {
+	changes := 0
+
+	// If we return early e.g. due to a folder health error, the scan needs
+	// to be cancelled.
+	scanCtx, scanCancel := context.WithCancel(ctx)
+	defer scanCancel()
+
+	scanConfig := f.scanConfig(subDirs)
 	var fchan chan scanner.ScanResult
 	if f.Type == config.FolderTypeReceiveEncrypted {
 		fchan = scanner.WalkWithoutHashing(scanCtx, scanConfig)
