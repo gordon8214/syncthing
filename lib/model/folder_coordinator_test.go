@@ -172,11 +172,17 @@ func TestRunInFolderLoopErrorsAreTheCallers(t *testing.T) {
 	if !errors.Is(err, failure) {
 		t.Fatalf("got %v", err)
 	}
-	state, _, err := m.State(fcfg.ID)
+	// The serve loop sets the folder's state after the caller has the error.
+	// It has done so for the failed operation once it runs the next one,
+	// which itself does not change the state until it returns.
+	err = m.RunInFolderLoop(fcfg.ID, func(context.Context, FolderHandle) error {
+		state, _, err := m.State(fcfg.ID)
+		if err != nil || state == FolderError.String() {
+			return fmt.Errorf("a failed operation put the folder into an error state (%s, %v)", state, err)
+		}
+		return nil
+	})
 	must(t, err)
-	if state == FolderError.String() {
-		t.Fatal("a failed operation put the folder into an error state")
-	}
 	if err := m.RunInFolderLoop("missing", func(context.Context, FolderHandle) error { return nil }); err == nil {
 		t.Fatal("ran in a folder that doesn't exist")
 	}
