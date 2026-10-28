@@ -69,9 +69,18 @@ func (f *folder) runCoordinated(fn func(context.Context) error) error {
 	}
 	var opErr error
 	err := f.doInSync(func(ctx context.Context) error {
+		oldHash := f.ignores.Hash()
 		if err := f.getHealthErrorAndLoadIgnores(); err != nil {
 			opErr = err
 			return err
+		}
+		if f.ignores.Hash() != oldHash {
+			// As in scanSubdirs: this load, and not the scan that may be
+			// scheduled for it, noticed the change, so the watcher must be
+			// restarted and a pull scheduled here.
+			f.sl.DebugContext(ctx, "Ignore patterns change detected before a coordinated change; triggering puller")
+			f.ignoresUpdated()
+			f.SchedulePull()
 		}
 		opErr = fn(ctx)
 		return ctx.Err()

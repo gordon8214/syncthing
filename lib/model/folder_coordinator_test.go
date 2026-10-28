@@ -200,6 +200,45 @@ func TestRunInFolderLoopIgnoresAndReservedState(t *testing.T) {
 	must(t, err)
 }
 
+// An operation that runs between .stignore being written and the scan that
+// would notice it loads the new patterns, and must then do what that scan
+// would: restart the watcher and schedule a pull.
+func TestRunInFolderLoopNoticesIgnoreChanges(t *testing.T) {
+	m, fcfg := setupCoordinatedFolder(t, func(c *config.FolderConfiguration) {
+		// A watcher that never reports the change within the test
+		c.FSWatcherEnabled = true
+		c.FSWatcherDelayS = 3600
+	})
+	drain := func(c chan struct{}) {
+		select {
+		case <-c:
+		default:
+		}
+	}
+	err := m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+		// Nothing reads these channels while the serve loop runs this.
+		f := h.(*folderHandle).f
+		drain(f.pullScheduled)
+		drain(f.restartWatchChan)
+		return os.WriteFile(filepath.Join(fcfg.Path, ".stignore"), []byte("*.tmp\n"), 0o644)
+	})
+	must(t, err)
+	err = m.RunInFolderLoop(fcfg.ID, func(_ context.Context, h FolderHandle) error {
+		if !h.IsIgnored("x.tmp") {
+			return errors.New("new ignore patterns not loaded")
+		}
+		f := h.(*folderHandle).f
+		if len(f.pullScheduled) != 1 {
+			return errors.New("no pull scheduled for the changed ignore patterns")
+		}
+		if len(f.restartWatchChan) != 1 {
+			return errors.New("no watcher restart scheduled for the changed ignore patterns")
+		}
+		return nil
+	})
+	must(t, err)
+}
+
 func TestRunInFolderLoopArchivesPlatformHistory(t *testing.T) {
 	m, fcfg := setupCoordinatedFolder(t, func(c *config.FolderConfiguration) {
 		c.Versioning = config.VersioningConfiguration{Type: "staggered", Params: map[string]string{"preservePlatformData": "true"}}
