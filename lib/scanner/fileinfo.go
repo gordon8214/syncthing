@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/syncthing/syncthing/lib/protocol"
 )
@@ -41,7 +42,10 @@ func BlockSizeFor(size int64, curFile protocol.FileInfo, hasCurFile bool) int {
 // For a regular file, blocks may hold the file's block list, for instance
 // one hashed with BlockSizeFor's block size or the list of a file it was
 // renamed from; when nil, the file is hashed. The caller is responsible for
-// the file not changing between that and committing the result.
+// the file not changing between that and committing the result. The entry
+// always has a protocol block size: a list of several blocks must use one,
+// and a list of one block gets the smallest that holds the block and is at
+// least BlockSizeFor's.
 func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol.BlockInfo) (protocol.FileInfo, error) {
 	if cfg.CurrentFiler == nil {
 		cfg.CurrentFiler = noCurrentFiler{}
@@ -85,10 +89,23 @@ func FileInfoFor(ctx context.Context, cfg Config, name string, blocks []protocol
 
 	blockSize := BlockSizeFor(info.Size(), curFile, hasCurFile)
 	if len(blocks) > 1 {
-		// The block size of a given list is that of its blocks
+		// The block size of a longer list is that of its blocks
 		blockSize = blocks[0].Size
-	} else if len(blocks) == 1 {
-		blockSize = max(blockSize, blocks[0].Size)
+		if !slices.Contains(protocol.BlockSizes, blockSize) {
+			return protocol.FileInfo{}, fmt.Errorf("%s: block size %d is not a protocol block size", name, blockSize)
+		}
+	} else {
+		if len(blocks) == 1 {
+			// Any block size that holds the one block describes the list
+			blockSize = max(blockSize, blocks[0].Size)
+		}
+		// The smallest protocol block size that is at least that (a current
+		// entry may have kept another size)
+		i := slices.IndexFunc(protocol.BlockSizes, func(size int) bool { return size >= blockSize })
+		if i < 0 {
+			return protocol.FileInfo{}, fmt.Errorf("%s: block of %d bytes is larger than any protocol block size", name, blockSize)
+		}
+		blockSize = protocol.BlockSizes[i]
 	}
 	f.RawBlockSize = int32(blockSize)
 	if blocks == nil {

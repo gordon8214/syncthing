@@ -120,3 +120,79 @@ func TestFileInfoForNewVersion(t *testing.T) {
 		t.Fatalf("directory: %v %v", dir, err)
 	}
 }
+
+func writeTestFile(t *testing.T, fsys fs.Filesystem, name string, size int) []byte {
+	t.Helper()
+	data := bytes.Repeat([]byte("y"), size)
+	fd, err := fsys.Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	if _, err := fd.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestFileInfoForProtocolBlockSizes(t *testing.T) {
+	testFs := fs.NewFilesystem(fs.FilesystemTypeBasic, t.TempDir())
+	short := protocol.LocalDeviceID.Short()
+	hashed := func(data []byte, blockSize int) []protocol.BlockInfo {
+		t.Helper()
+		blocks, err := Blocks(context.Background(), bytes.NewReader(data), blockSize, int64(len(data)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return blocks
+	}
+
+	// A file renamed to a path without a current entry keeps its one block,
+	// hashed with 256 KiB blocks: the entry gets the protocol size that
+	// holds it, not the block's own size.
+	data := writeTestFile(t, testFs, "renamed", 200<<10)
+	cfg := Config{Filesystem: testFs, ShortID: short}
+	got, err := FileInfoFor(context.Background(), cfg, "renamed", hashed(data, 256<<10))
+	if err != nil || got.RawBlockSize != 256<<10 {
+		t.Fatalf("one block of 200 KiB: block size %d, %v", got.RawBlockSize, err)
+	}
+
+	// Nor smaller than BlockSizeFor's, which retains the current size.
+	data = writeTestFile(t, testFs, "small", 100<<10)
+	cfg.CurrentFiler = fixedCurrentFiler{"small": {Name: "small", RawBlockSize: 256 << 10}}
+	got, err = FileInfoFor(context.Background(), cfg, "small", hashed(data, 128<<10))
+	if err != nil || got.RawBlockSize != 256<<10 {
+		t.Fatalf("one block below a retained size: block size %d, %v", got.RawBlockSize, err)
+	}
+
+	// A current entry with a block size outside the protocol's doesn't pass
+	// it on to a hashed file.
+	writeTestFile(t, testFs, "odd", 150<<10)
+	cfg.CurrentFiler = fixedCurrentFiler{"odd": {Name: "odd", RawBlockSize: 200 << 10}}
+	got, err = FileInfoFor(context.Background(), cfg, "odd", nil)
+	if err != nil || got.RawBlockSize != 256<<10 || len(got.Blocks) != 1 {
+		t.Fatalf("hashed after an odd current size: %v %v", got, err)
+	}
+
+	// A list of several blocks of another size is refused.
+	data = writeTestFile(t, testFs, "several", 300<<10)
+	cfg.CurrentFiler = nil
+	if got, err := FileInfoFor(context.Background(), cfg, "several", hashed(data, 200<<10)); err == nil {
+		t.Fatalf("accepted 200 KiB blocks: %v", got)
+	}
+
+	// As is one block larger than the largest block size.
+	fd, err := testFs.Create("huge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := int64(protocol.MaxBlockSize + 1)
+	if err := fd.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	fd.Close()
+	huge := []protocol.BlockInfo{{Offset: 0, Size: int(size), Hash: make([]byte, 32)}}
+	if got, err := FileInfoFor(context.Background(), cfg, "huge", huge); err == nil {
+		t.Fatalf("accepted a block larger than the largest block size: %v", got.RawBlockSize)
+	}
+}
