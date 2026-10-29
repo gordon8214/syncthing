@@ -2299,6 +2299,170 @@ angular.module('syncthing.core')
             }).error($scope.emitHTTPError);
         });
 
+        // The folder browser lists folders on the device running Syncthing,
+        // which isn't necessarily the one running the browser. Directories
+        // here end in the path separator, as /system/browse lists a
+        // directory's contents only then (it returns them without one);
+        // '' stands for the list of roots.
+        $scope.folderBrowser = {
+            current: '',
+            parent: null,
+            segments: [],
+            entries: [],
+            visible: [],
+            loading: false,
+            showHidden: false,
+            onSelect: null
+        };
+
+        function expandTilde(path) {
+            var sep = $scope.system.pathSeparator;
+            if (path === '~') {
+                return $scope.system.tilde;
+            }
+            if (path.indexOf('~' + sep) === 0 || path.indexOf('~/') === 0) {
+                return pathJoin($scope.system.tilde, path.slice(2));
+            }
+            return path;
+        }
+
+        function isAbsolutePath(path) {
+            if ($scope.system.pathSeparator === '\\') {
+                return /^[A-Za-z]:[\\\/]/.test(path) || path.indexOf('\\\\') === 0;
+            }
+            return path.indexOf('/') === 0;
+        }
+
+        function withTrailingSeparator(dir) {
+            var sep = $scope.system.pathSeparator;
+            return dir.slice(-1) === sep ? dir : dir + sep;
+        }
+
+        // Returns '' for a root such as / or C:\.
+        function parentDir(dir) {
+            var trimmed = dir.slice(0, -1);
+            var idx = trimmed.lastIndexOf($scope.system.pathSeparator);
+            return idx < 0 ? '' : trimmed.slice(0, idx + 1);
+        }
+
+        function pathSegments(dir) {
+            var sep = $scope.system.pathSeparator;
+            var segments = [];
+            var path = '';
+            dir.split(sep).forEach(function (part, i) {
+                if (part === '' && i > 0) {
+                    return;
+                }
+                path += part + sep;
+                segments.push({ name: part === '' ? sep : part, path: path });
+            });
+            return segments;
+        }
+
+        function listDir(dir, callback) {
+            $http.get(urlbase + '/system/browse', {
+                params: { current: dir }
+            }).success(function (data) {
+                callback(data.map(withTrailingSeparator));
+            }).error($scope.emitHTTPError);
+        }
+
+        // Calls back with the deepest directory of dir that exists (in the
+        // case the parent lists it in), or '' if there is none.
+        function existingDir(dir, callback) {
+            if (dir === '') {
+                callback('');
+                return;
+            }
+            var parent = parentDir(dir);
+            listDir(parent, function (data) {
+                var match = data.filter(function (path) {
+                    return path === dir;
+                })[0] || data.filter(function (path) {
+                    return path.toLowerCase() === dir.toLowerCase();
+                })[0];
+                if (match) {
+                    callback(match);
+                } else {
+                    existingDir(parent, callback);
+                }
+            });
+        }
+
+        function openFolderBrowser(startPath, onSelect) {
+            var path = expandTilde(startPath || '') || $scope.system.tilde;
+            $scope.folderBrowser.onSelect = onSelect;
+            existingDir(withTrailingSeparator(path), function (dir) {
+                $scope.folderBrowserOpen(dir);
+                showModal('#browse-folder');
+            });
+        }
+
+        $scope.folderBrowserOpen = function (dir) {
+            var parent = dir === '' ? null : parentDir(dir);
+            if (parent === '' && $scope.system.pathSeparator === '/') {
+                // A Unix root is the only root.
+                parent = null;
+            }
+            $scope.folderBrowser.current = dir;
+            $scope.folderBrowser.parent = parent;
+            $scope.folderBrowser.segments = dir === '' ? [] : pathSegments(dir);
+            $scope.folderBrowser.entries = [];
+            $scope.folderBrowserFilter();
+            $scope.folderBrowser.loading = true;
+            listDir(dir, function (data) {
+                if ($scope.folderBrowser.current !== dir) {
+                    return;
+                }
+                $scope.folderBrowser.entries = data.map(function (path) {
+                    var trimmed = path.slice(0, -1);
+                    var name = dir === '' ? path : trimmed.slice(trimmed.lastIndexOf($scope.system.pathSeparator) + 1);
+                    return { path: path, name: name };
+                });
+                $scope.folderBrowser.loading = false;
+                $scope.folderBrowserFilter();
+            });
+        };
+
+        $scope.folderBrowserOpenHome = function () {
+            $scope.folderBrowserOpen(withTrailingSeparator($scope.system.tilde));
+        };
+
+        $scope.folderBrowserFilter = function () {
+            $scope.folderBrowser.visible = $scope.folderBrowser.entries.filter(function (entry) {
+                return $scope.folderBrowser.showHidden || entry.name.charAt(0) !== '.';
+            });
+        };
+
+        $scope.folderBrowserSelect = function () {
+            var path = $scope.folderBrowser.current;
+            if (parentDir(path) !== '') {
+                path = path.slice(0, -1);
+            }
+            $scope.folderBrowser.onSelect(path);
+            hideModal('#browse-folder');
+        };
+
+        $scope.browseFolderPath = function () {
+            openFolderBrowser($scope.currentFolder.path || $scope.config.defaults.folder.path, function (path) {
+                $scope.currentFolder.path = path;
+                // Keep a later label or ID change from replacing the path
+                // with the default one.
+                $scope.folderEditor.folderPath.$setDirty();
+            });
+        };
+
+        $scope.browseVersionsPath = function () {
+            var path = expandTilde($scope.currentFolder.versioning.fsPath || '');
+            if (path && !isAbsolutePath(path) && $scope.currentFolder.path) {
+                // Relative versions paths are relative to the folder.
+                path = pathJoin(expandTilde($scope.currentFolder.path), path);
+            }
+            openFolderBrowser(path || $scope.currentFolder.path, function (path) {
+                $scope.currentFolder.versioning.fsPath = path;
+            });
+        };
+
         $scope.$watch('currentFolder.label', function (newvalue) {
             if (!newvalue || !shouldSetDefaultFolderPath()) {
                 return;

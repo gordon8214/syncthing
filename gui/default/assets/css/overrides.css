@@ -566,3 +566,23 @@ html[lang|="ko"] i {
     -webkit-user-select: all;
     user-select: all;
 }
+
+.folder-browser-path {
+    height: auto;
+    overflow-wrap: anywhere;
+}
+
+.folder-browser-list {
+    max-height: 50vh;
+    overflow-y: auto;
+    margin-top: 10px;
+}
+
+.folder-browser-list .table {
+    margin-bottom: 0;
+}
+
+/* Bootstrap's light hover color stands out in the dark themes. */
+.folder-browser-list .table-hover > tbody > tr:hover {
+    background-color: rgba(128, 128, 128, 0.2);
+}

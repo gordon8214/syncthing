@@ -75,7 +75,14 @@
           </div>
           <div class="form-group" ng-class="{'has-error': folderEditor.folderPath.$invalid && folderEditor.folderPath.$dirty && !editingFolderDefaults()}">
             <label translate for="folderPath">Folder Path</label>
-            <input name="folderPath" ng-readonly="editingFolderExisting()" id="folderPath" class="form-control" type="text" ng-model="currentFolder.path" list="directory-list" ng-required="!editingFolderDefaults()" ng-aria-required="!editingFolderDefaults()" path-is-sub-dir />
+            <div ng-class="{'input-group': !editingFolderExisting()}">
+              <input name="folderPath" ng-readonly="editingFolderExisting()" id="folderPath" class="form-control" type="text" ng-model="currentFolder.path" list="directory-list" ng-required="!editingFolderDefaults()" ng-aria-required="!editingFolderDefaults()" path-is-sub-dir />
+              <span class="input-group-btn" ng-if="!editingFolderExisting()">
+                <button type="button" class="btn btn-default" ng-click="browseFolderPath()">
+                  <span class="fas fa-folder-open"></span>&nbsp;<span translate>Browse</span>
+                </button>
+              </span>
+            </div>
             <datalist id="directory-list">
               <option ng-repeat="directory in directoryList" value="{{ directory }}" />
             </datalist>
@@ -176,7 +183,14 @@
           </div>
           <div class="form-group" ng-if="internalVersioningEnabled()">
             <label translate for="fsPath">Versions Path</label>
-            <input name="fsPath" id="fsPath" class="form-control" type="text" ng-model="currentFolder.versioning.fsPath" />
+            <div class="input-group">
+              <input name="fsPath" id="fsPath" class="form-control" type="text" ng-model="currentFolder.versioning.fsPath" />
+              <span class="input-group-btn">
+                <button type="button" class="btn btn-default" ng-click="browseVersionsPath()">
+                  <span class="fas fa-folder-open"></span>&nbsp;<span translate>Browse</span>
+                </button>
+              </span>
+            </div>
             <p translate class="help-block">Path where versions should be stored (leave empty for the default .stversions directory in the shared folder).</p>
           </div>
           <div class="form-group" ng-if="currentFolder._guiVersioning.selector=='external'" ng-class="{'has-error': folderEditor.externalCommand.$invalid && folderEditor.externalCommand.$dirty}">

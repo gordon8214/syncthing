@@ -1,0 +1,45 @@
+<modal id="browse-folder" status="default" icon="fas fa-folder-open" heading="{{'Select Folder' | translate}}" large="no" closeable="yes">
+  <div class="modal-body">
+    <div class="input-group">
+      <div class="well well-sm form-control folder-browser-path">
+        <span ng-repeat="segment in folderBrowser.segments"><span ng-if="!$first" class="text-muted"> &rsaquo; </span><a href="" ng-click="folderBrowserOpen(segment.path)">{{segment.name}}</a></span>
+      </div>
+      <span class="input-group-btn">
+        <button data-container="body" type="button" class="btn btn-default" ng-click="folderBrowserOpen(folderBrowser.parent)" ng-disabled="folderBrowser.parent === null" tooltip data-original-title="{{ 'Up' | translate }}" aria-label="{{ 'Up' | translate }}">
+          <span class="fas fa-level-up-alt"></span>
+        </button>
+        <button data-container="body" type="button" class="btn btn-default" ng-click="folderBrowserOpenHome()" tooltip data-original-title="{{ 'Home' | translate }}" aria-label="{{ 'Home' | translate }}">
+          <span class="fas fa-home"></span>
+        </button>
+      </span>
+    </div>
+    <div class="folder-browser-list">
+      <table class="table table-condensed table-hover">
+        <tbody>
+          <tr ng-repeat="entry in folderBrowser.visible">
+            <td><a href="" ng-click="folderBrowserOpen(entry.path)"><span class="fas fa-fw fa-folder"></span>&nbsp;{{entry.name}}</a></td>
+          </tr>
+          <tr ng-if="folderBrowser.loading">
+            <td class="text-muted" translate>Loading...</td>
+          </tr>
+          <tr ng-if="!folderBrowser.loading && folderBrowser.visible.length === 0">
+            <td class="text-muted" translate>No subfolders</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="checkbox">
+      <label>
+        <input type="checkbox" ng-model="folderBrowser.showHidden" ng-change="folderBrowserFilter()" />&nbsp;<span translate>Show hidden folders</span>
+      </label>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-primary btn-sm" ng-click="folderBrowserSelect()" ng-disabled="folderBrowser.current === ''">
+      <span class="fas fa-check"></span>&nbsp;<span translate>Select</span>
+    </button>
+    <button type="button" class="btn btn-default btn-sm" data-dismiss="modal">
+      <span class="fas fa-times"></span>&nbsp;<span translate>Cancel</span>
+    </button>
+  </div>
+</modal>
