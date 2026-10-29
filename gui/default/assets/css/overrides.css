@@ -582,6 +582,20 @@ html[lang|="ko"] i {
     margin-bottom: 0;
 }
 
+/* Make the whole row clickable. */
+.folder-browser-list .table a {
+    display: block;
+}
+
+.folder-browser-status {
+    margin: 0;
+}
+
+.folder-browser-status span {
+    display: block;
+    padding: 5px;
+}
+
 /* Bootstrap's light hover color stands out in the dark themes. */
 .folder-browser-list .table-hover > tbody > tr:hover {
     background-color: rgba(128, 128, 128, 0.2);

@@ -14,19 +14,17 @@
       </span>
     </div>
     <div class="folder-browser-list">
-      <table class="table table-condensed table-hover">
+      <table class="table table-condensed table-hover" ng-if="folderBrowser.visible.length > 0">
         <tbody>
-          <tr ng-repeat="entry in folderBrowser.visible">
+          <tr ng-repeat="entry in folderBrowser.visible track by entry.path">
             <td><a href="" ng-click="folderBrowserOpen(entry.path)"><span class="fas fa-fw fa-folder"></span>&nbsp;{{entry.name}}</a></td>
-          </tr>
-          <tr ng-if="folderBrowser.loading">
-            <td class="text-muted" translate>Loading...</td>
-          </tr>
-          <tr ng-if="!folderBrowser.loading && folderBrowser.visible.length === 0">
-            <td class="text-muted" translate>No subfolders</td>
           </tr>
         </tbody>
       </table>
+      <p class="text-muted folder-browser-status" role="status">
+        <span ng-if="folderBrowser.loading" translate>Loading...</span>
+        <span ng-if="!folderBrowser.loading && folderBrowser.visible.length === 0" translate>No subfolders</span>
+      </p>
     </div>
     <div class="checkbox">
       <label>

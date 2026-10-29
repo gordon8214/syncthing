@@ -2315,6 +2315,10 @@ angular.module('syncthing.core')
             onSelect: null
         };
 
+        // Counts the browser's moves, so that a late response for a place it
+        // has since left is dropped.
+        var folderBrowserGeneration = 0;
+
         function expandTilde(path) {
             var sep = $scope.system.pathSeparator;
             if (path === '~') {
@@ -2338,8 +2342,46 @@ angular.module('syncthing.core')
             return dir.slice(-1) === sep ? dir : dir + sep;
         }
 
-        // Returns '' for a root such as / or C:\.
+        // Returns the root of dir, such as /, C:\ or \\server\share\, or ''
+        // for a relative path.
+        function pathRoot(dir) {
+            if ($scope.system.pathSeparator === '\\') {
+                var match = /^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+\\)/.exec(dir);
+                return match ? match[0] : '';
+            }
+            return dir.charAt(0) === '/' ? '/' : '';
+        }
+
+        // Tidies a path as the server would: on Windows forward slashes
+        // become backslashes, and empty and . parts go, as do .. parts
+        // with their parent.
+        function cleanPath(path) {
+            var sep = $scope.system.pathSeparator;
+            if (path === '') {
+                return '';
+            }
+            if (sep === '\\') {
+                path = path.replace(/\//g, '\\');
+            }
+            var root = pathRoot(withTrailingSeparator(path));
+            var parts = [];
+            path.slice(root.length).split(sep).forEach(function (part) {
+                if (part === '..' && parts.length > 0 && parts[parts.length - 1] !== '..') {
+                    parts.pop();
+                } else if (part === '..' && !root) {
+                    parts.push(part);
+                } else if (part !== '' && part !== '.' && part !== '..') {
+                    parts.push(part);
+                }
+            });
+            return root + parts.join(sep);
+        }
+
+        // Returns '' for a root.
         function parentDir(dir) {
+            if (dir === pathRoot(dir)) {
+                return '';
+            }
             var trimmed = dir.slice(0, -1);
             var idx = trimmed.lastIndexOf($scope.system.pathSeparator);
             return idx < 0 ? '' : trimmed.slice(0, idx + 1);
@@ -2347,58 +2389,98 @@ angular.module('syncthing.core')
 
         function pathSegments(dir) {
             var sep = $scope.system.pathSeparator;
+            var root = pathRoot(dir);
             var segments = [];
-            var path = '';
-            dir.split(sep).forEach(function (part, i) {
-                if (part === '' && i > 0) {
+            var path = root;
+            if (root) {
+                segments.push({ name: root.length > 1 ? root.slice(0, -1) : root, path: root });
+            }
+            dir.slice(root.length).split(sep).forEach(function (part) {
+                if (part === '') {
                     return;
                 }
                 path += part + sep;
-                segments.push({ name: part === '' ? sep : part, path: path });
+                segments.push({ name: part, path: path });
             });
             return segments;
         }
 
-        function listDir(dir, callback) {
+        function listDir(dir, callback, onError) {
             $http.get(urlbase + '/system/browse', {
                 params: { current: dir }
             }).success(function (data) {
-                callback(data.map(withTrailingSeparator));
-            }).error($scope.emitHTTPError);
+                // The roots come back as null when they can't be read.
+                callback((data || []).map(withTrailingSeparator));
+            }).error(function (data, status, headers, config) {
+                onError();
+                $scope.emitHTTPError(data, status, headers, config);
+            });
         }
 
-        // Calls back with the deepest directory of dir that exists (in the
-        // case the parent lists it in), or '' if there is none.
-        function existingDir(dir, callback) {
-            if (dir === '') {
-                callback('');
+        // Calls back with the deepest directory of dir that exists, or '' if
+        // there is none. The parent's listing gives the directory's name as
+        // stored; listing the directory itself covers a parent that can't be
+        // read, though it can't tell an empty directory from a missing one.
+        function existingDir(dir, callback, onError) {
+            if (dir === '' || (dir === pathRoot(dir) && dir.indexOf('\\\\') === 0)) {
+                // The roots don't include network shares, so take a share
+                // as it is.
+                callback(dir);
                 return;
             }
             var parent = parentDir(dir);
-            listDir(parent, function (data) {
-                var match = data.filter(function (path) {
+            listDir(parent, function (siblings) {
+                var match = siblings.filter(function (path) {
                     return path === dir;
-                })[0] || data.filter(function (path) {
+                })[0] || siblings.filter(function (path) {
                     return path.toLowerCase() === dir.toLowerCase();
                 })[0];
                 if (match) {
                     callback(match);
-                } else {
-                    existingDir(parent, callback);
+                    return;
+                }
+                listDir(dir, function (children) {
+                    if (children.length > 0) {
+                        callback(dir);
+                    } else {
+                        existingDir(parent, callback, onError);
+                    }
+                }, onError);
+            }, onError);
+        }
+
+        // fieldID is the field that gets focus back when the browser closes,
+        // as Bootstrap returns it only to buttons that open a dialog through
+        // data-toggle.
+        function openFolderBrowser(startPath, onSelect, fieldID) {
+            var path = cleanPath(expandTilde(startPath || '')) || $scope.system.tilde;
+            var generation = ++folderBrowserGeneration;
+            // Show the browser right away, as finding where to start can take
+            // a few requests.
+            $scope.folderBrowser.current = '';
+            $scope.folderBrowser.parent = null;
+            $scope.folderBrowser.segments = [];
+            $scope.folderBrowser.entries = [];
+            $scope.folderBrowser.visible = [];
+            $scope.folderBrowser.loading = true;
+            $scope.folderBrowser.onSelect = onSelect;
+            $('#browse-folder').off('hidden.bs.modal.folderBrowser').one('hidden.bs.modal.folderBrowser', function () {
+                $(fieldID).focus();
+            });
+            showModal('#browse-folder');
+            existingDir(withTrailingSeparator(path), function (dir) {
+                if (generation === folderBrowserGeneration) {
+                    $scope.folderBrowserOpen(dir);
+                }
+            }, function () {
+                if (generation === folderBrowserGeneration) {
+                    $scope.folderBrowser.loading = false;
                 }
             });
         }
 
-        function openFolderBrowser(startPath, onSelect) {
-            var path = expandTilde(startPath || '') || $scope.system.tilde;
-            $scope.folderBrowser.onSelect = onSelect;
-            existingDir(withTrailingSeparator(path), function (dir) {
-                $scope.folderBrowserOpen(dir);
-                showModal('#browse-folder');
-            });
-        }
-
         $scope.folderBrowserOpen = function (dir) {
+            var generation = ++folderBrowserGeneration;
             var parent = dir === '' ? null : parentDir(dir);
             if (parent === '' && $scope.system.pathSeparator === '/') {
                 // A Unix root is the only root.
@@ -2406,12 +2488,12 @@ angular.module('syncthing.core')
             }
             $scope.folderBrowser.current = dir;
             $scope.folderBrowser.parent = parent;
-            $scope.folderBrowser.segments = dir === '' ? [] : pathSegments(dir);
+            $scope.folderBrowser.segments = pathSegments(dir);
             $scope.folderBrowser.entries = [];
             $scope.folderBrowserFilter();
             $scope.folderBrowser.loading = true;
             listDir(dir, function (data) {
-                if ($scope.folderBrowser.current !== dir) {
+                if (generation !== folderBrowserGeneration) {
                     return;
                 }
                 $scope.folderBrowser.entries = data.map(function (path) {
@@ -2421,6 +2503,10 @@ angular.module('syncthing.core')
                 });
                 $scope.folderBrowser.loading = false;
                 $scope.folderBrowserFilter();
+            }, function () {
+                if (generation === folderBrowserGeneration) {
+                    $scope.folderBrowser.loading = false;
+                }
             });
         };
 
@@ -2436,7 +2522,7 @@ angular.module('syncthing.core')
 
         $scope.folderBrowserSelect = function () {
             var path = $scope.folderBrowser.current;
-            if (parentDir(path) !== '') {
+            if (path !== pathRoot(path)) {
                 path = path.slice(0, -1);
             }
             $scope.folderBrowser.onSelect(path);
@@ -2444,23 +2530,62 @@ angular.module('syncthing.core')
         };
 
         $scope.browseFolderPath = function () {
-            openFolderBrowser($scope.currentFolder.path || $scope.config.defaults.folder.path, function (path) {
-                $scope.currentFolder.path = path;
+            var folder = $scope.currentFolder;
+            openFolderBrowser(folder.path || $scope.config.defaults.folder.path, function (path) {
+                if ($scope.currentFolder !== folder) {
+                    // The editor has moved on to another folder.
+                    return;
+                }
+                folder.path = path;
                 // Keep a later label or ID change from replacing the path
                 // with the default one.
                 $scope.folderEditor.folderPath.$setDirty();
-            });
+            }, '#folderPath');
         };
 
         $scope.browseVersionsPath = function () {
-            var path = expandTilde($scope.currentFolder.versioning.fsPath || '');
-            if (path && !isAbsolutePath(path) && $scope.currentFolder.path) {
+            var folder = $scope.currentFolder;
+            var path = expandTilde(folder.versioning.fsPath || '');
+            if (path && !isAbsolutePath(path) && folder.path) {
                 // Relative versions paths are relative to the folder.
-                path = pathJoin(expandTilde($scope.currentFolder.path), path);
+                path = pathJoin(expandTilde(folder.path), path);
             }
-            openFolderBrowser(path || $scope.currentFolder.path, function (path) {
-                $scope.currentFolder.versioning.fsPath = path;
-            });
+            openFolderBrowser(path || folder.path, function (path) {
+                if ($scope.currentFolder !== folder) {
+                    // The editor has moved on to another folder.
+                    return;
+                }
+                folder.versioning.fsPath = path;
+            }, '#fsPath');
+        };
+
+        // Returns 'inside' when the versions path is in the folder, other
+        // than in the .stversions directory the folder ignores, and 'parent'
+        // when it contains the folder; otherwise ''. Versions in the folder
+        // sync to other devices, and versioning cleanup removes files and
+        // empty directories under the versions path.
+        $scope.versionsPathOverlap = function () {
+            var folder = $scope.currentFolder;
+            if (!folder || !folder.path || !folder.versioning || !folder.versioning.fsPath) {
+                return '';
+            }
+            var sep = $scope.system.pathSeparator;
+            var folderPath = cleanPath(expandTilde(folder.path));
+            var versionsPath = expandTilde(folder.versioning.fsPath);
+            if (!isAbsolutePath(versionsPath)) {
+                // Relative versions paths are relative to the folder.
+                versionsPath = pathJoin(folderPath, versionsPath);
+            }
+            folderPath = withTrailingSeparator(folderPath);
+            versionsPath = withTrailingSeparator(cleanPath(versionsPath));
+            if (['darwin', 'windows'].indexOf($scope.version.os) !== -1) {
+                folderPath = folderPath.toLowerCase();
+                versionsPath = versionsPath.toLowerCase();
+            }
+            if (versionsPath.indexOf(folderPath) === 0) {
+                return versionsPath.slice(folderPath.length).indexOf('.stversions' + sep) === 0 ? '' : 'inside';
+            }
+            return folderPath.indexOf(versionsPath) === 0 ? 'parent' : '';
         };
 
         $scope.$watch('currentFolder.label', function (newvalue) {

@@ -192,6 +192,10 @@
               </span>
             </div>
             <p translate class="help-block">Path where versions should be stored (leave empty for the default .stversions directory in the shared folder).</p>
+            <p class="help-block" ng-if="versionsPathOverlap()">
+              <span class="text-danger" translate ng-if="versionsPathOverlap() == 'inside'">Warning, this path is in the shared folder: versions kept there sync to other devices, and versioning cleanup can delete files and empty folders under it. Leave the path empty to use .stversions instead.</span>
+              <span class="text-danger" translate ng-if="versionsPathOverlap() == 'parent'">Warning, this path contains the shared folder: versions mix with the files already there, Trash Can versions can replace files with the same name, and versioning cleanup can delete files and empty folders under it.</span>
+            </p>
           </div>
           <div class="form-group" ng-if="currentFolder._guiVersioning.selector=='external'" ng-class="{'has-error': folderEditor.externalCommand.$invalid && folderEditor.externalCommand.$dirty}">
             <p translate class="help-block">An external command handles the versioning. It has to remove the file from the shared folder. If the path to the application contains spaces, it should be quoted.</p>
