@@ -28,7 +28,7 @@ type LineFormat struct {
 type formattingOptions struct {
 	LineFormat
 
-	outMut       sync.Mutex // guards out, and serializes writes to it
+	outMut       sync.Mutex // guards out and LineFormat, and serializes writes to out
 	out          io.Writer
 	recs         []*lineRecorder
 	timeOverride time.Time
@@ -41,35 +41,47 @@ type formattingHandler struct {
 }
 
 func SetLineFormat(f LineFormat) {
+	globalFormatter.outMut.Lock()
 	globalFormatter.LineFormat = f
+	globalFormatter.outMut.Unlock()
 }
 
-// SetOutput sets where log lines are written, instead of standard output.
-// Lines are written one at a time, so w need not be safe for concurrent use.
-func SetOutput(w io.Writer) {
+// SetOutput sets where log lines are written, instead of standard output,
+// and returns the previous output; a nil w discards them. Lines are written
+// one at a time with a lock held, so w need not be safe for concurrent use,
+// but it must not log (which would deadlock), and a slow w holds up every
+// goroutine that logs.
+func SetOutput(w io.Writer) io.Writer {
 	globalFormatter.outMut.Lock()
+	defer globalFormatter.outMut.Unlock()
+	prev := globalFormatter.out
 	globalFormatter.out = w
-	globalFormatter.outMut.Unlock()
+	return prev
 }
 
 var _ slog.Handler = (*formattingHandler)(nil)
 
-func (h *formattingHandler) Enabled(context.Context, slog.Level) bool {
-	return true
+func (h *formattingHandler) Enabled(_ context.Context, level slog.Level) bool {
+	// Handle drops records below the level of the package that logs them
+	return level >= globalLevels.Min()
 }
 
 func (h *formattingHandler) Handle(_ context.Context, rec slog.Record) error {
 	fr := runtime.CallersFrames([]uintptr{rec.PC})
 	var logAttrs []any
-	var pkgName string
-	if fram, _ := fr.Next(); fram.Function != "" {
-		var typeName string
+	var pkgName, typeName string
+	fram, _ := fr.Next()
+	if fram.Function != "" {
 		pkgName, typeName = funcNameToPkg(fram.Function)
-		lvl := globalLevels.Get(pkgName)
-		if lvl > rec.Level {
-			// Logging not enabled at the record's level
-			return nil
-		}
+	}
+	// A record from an unknown package, such as one from the log package,
+	// gets the default level
+	lvl := globalLevels.Get(pkgName)
+	if lvl > rec.Level {
+		// Logging not enabled at the record's level
+		return nil
+	}
+	if pkgName != "" {
 		logAttrs = append(logAttrs, slog.String("pkg", pkgName))
 		if lvl <= slog.LevelDebug {
 			// We are debugging, add additional source line data
@@ -197,18 +209,15 @@ func funcNameToPkg(fn string) (string, string) {
 	fn = strings.TrimPrefix(fn, "github.com/syncthing/syncthing/internal/")
 
 	// The package path ends at the first dot after its last slash: other
-	// modules' paths contain dots (t-shaped.nl/sushitrain/v2/src.Func).
-	var dir string
-	if i := strings.LastIndex(fn, "/"); i >= 0 {
-		dir, fn = fn[:i+1], fn[i+1:]
-	}
-
-	pkgTypFn := strings.Split(fn, ".") // [package, type, method] or [package, function]
+	// modules' paths contain dots (t-shaped.nl/sushitrain/v2/src.Func), and
+	// the linker writes a dot in the last element as %2e.
+	dirLen := strings.LastIndex(fn, "/") + 1
+	pkgTypFn := strings.Split(fn[dirLen:], ".") // [package, type, method] or [package, function]
+	pkg := strings.ReplaceAll(fn[:dirLen+len(pkgTypFn[0])], "%2e", ".")
 	if len(pkgTypFn) <= 2 {
-		return dir + pkgTypFn[0], ""
+		return pkg, ""
 	}
 
-	pkg := dir + pkgTypFn[0]
 	// Remove parenthesis and asterisk from the type name
 	typ := strings.TrimLeft(strings.TrimRight(pkgTypFn[1], ")"), "(*")
 	// Skip certain type names that add no value

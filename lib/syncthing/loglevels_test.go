@@ -8,8 +8,8 @@ package syncthing
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,13 +18,7 @@ import (
 )
 
 func TestSetLogLevels(t *testing.T) {
-	before := slogutil.PackageLevels()
-	t.Cleanup(func() {
-		slogutil.SetDefaultLevel(slog.LevelInfo)
-		for pkg, level := range before {
-			slogutil.SetPackageLevel(pkg, level)
-		}
-	})
+	t.Cleanup(slogutil.SaveLevels())
 
 	SetLogLevels(slog.LevelWarn, " model:ERROR, protocol,,scanner:nonsense")
 	want := map[string]slog.Level{
@@ -49,25 +43,11 @@ func TestSetLogLevels(t *testing.T) {
 	}
 }
 
-func TestLogFacilitiesAndLines(t *testing.T) {
-	before := LogLevels()
-	descr := LogFacilities()["syncthing"]
+func TestLogLevelsAndLines(t *testing.T) {
+	t.Cleanup(slogutil.SaveLevels())
 	buf := new(bytes.Buffer)
-	SetLogOutput(buf)
-	t.Cleanup(func() {
-		SetLogOutput(os.Stdout)
-		for pkg, level := range before {
-			SetLogLevel(pkg, level)
-		}
-		slogutil.RegisterPackage(descr)
-	})
-
-	// This test's package registers itself under its own name, replacing
-	// the description the engine gave it
-	RegisterLogFacility("Test facility")
-	if got := LogFacilities()["syncthing"]; got != "Test facility" {
-		t.Fatalf("description %q", got)
-	}
+	prev := SetLogOutput(buf)
+	t.Cleanup(func() { SetLogOutput(prev) })
 
 	start := time.Now()
 	SetLogLevel("syncthing", slog.LevelInfo)
@@ -77,6 +57,7 @@ func TestLogFacilitiesAndLines(t *testing.T) {
 		t.Fatal("the level did not change")
 	}
 	slog.Debug("A shown line")
+	SetLogOutput(prev)
 
 	var shown []LogLine
 	for _, line := range LogLines(start) {
@@ -89,5 +70,28 @@ func TestLogFacilitiesAndLines(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "A shown line") || strings.Contains(out, "A hidden line") {
 		t.Fatalf("output %q", out)
+	}
+}
+
+func TestLogWarnings(t *testing.T) {
+	t.Cleanup(slogutil.SaveLevels())
+	prev := SetLogOutput(io.Discard)
+	t.Cleanup(func() { SetLogOutput(prev) })
+
+	start := time.Now()
+	SetLogLevel("syncthing", slog.LevelDebug)
+	slog.Warn("A warning before a flood")
+	for range 1001 {
+		slog.Debug("A line of the flood")
+	}
+
+	for _, line := range LogLines(start) {
+		if strings.HasPrefix(line.Message, "A warning") {
+			t.Fatal("the flood kept the warning in LogLines; it needs more lines")
+		}
+	}
+	warnings := LogWarnings(start)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0].Message, "A warning before a flood") || warnings[0].Facility != "syncthing" {
+		t.Fatalf("warnings %+v", warnings)
 	}
 }

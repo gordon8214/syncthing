@@ -56,10 +56,12 @@ func RegisterLogFacility(descr string) {
 }
 
 // SetLogOutput sets where the log handler writes formatted lines, instead
-// of standard output. The handler writes one line at a time, so w need not
-// be safe for concurrent use.
-func SetLogOutput(w io.Writer) {
-	slogutil.SetOutput(w)
+// of standard output, and returns the previous output; a nil w discards
+// them. The handler writes one line at a time with a lock held, so w need
+// not be safe for concurrent use, but it must not log (which would
+// deadlock), and a slow w holds up every goroutine that logs.
+func SetLogOutput(w io.Writer) io.Writer {
+	return slogutil.SetOutput(w)
 }
 
 // A LogLine is a message the log handler logged.
@@ -70,11 +72,23 @@ type LogLine struct {
 	Message  string // including its attributes
 }
 
-// LogLines returns the lines logged after since, oldest first. The handler
-// keeps the last thousand lines, of every level that was enabled for the
-// package logging it at the time, as the web GUI's log shows them.
+// LogLines returns the lines logged after since, in the order they were
+// recorded, which can differ from the order of their times for lines logged
+// at the same moment. The handler keeps the last thousand lines, of every
+// level that was enabled for the package logging it at the time, as the web
+// GUI's log shows them.
 func LogLines(since time.Time) []LogLine {
-	recorded := slogutil.GlobalRecorder.Since(since)
+	return logLines(slogutil.GlobalRecorder.Since(since))
+}
+
+// LogWarnings returns the warnings and errors logged after since, as
+// LogLines does. The handler keeps the last thousand of them apart from the
+// other lines, so that debug output doesn't push them out.
+func LogWarnings(since time.Time) []LogLine {
+	return logLines(slogutil.WarningRecorder.Since(since))
+}
+
+func logLines(recorded []slogutil.Line) []LogLine {
 	lines := make([]LogLine, len(recorded))
 	for i, line := range recorded {
 		lines[i] = LogLine{

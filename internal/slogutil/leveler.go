@@ -11,6 +11,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // A levelTracker keeps track of log level per package. This enables the
@@ -40,6 +41,12 @@ func SetDefaultLevel(level slog.Level) {
 	globalLevels.SetDefault(level)
 }
 
+// SaveLevels returns a function that puts the default level and the
+// per-package levels back as they are now, for tests that change them.
+func SaveLevels() (restore func()) {
+	return globalLevels.save()
+}
+
 func SetLevelOverrides(sttrace string) {
 	pkgs := strings.SplitSeq(sttrace, ",")
 	for pkg := range pkgs {
@@ -63,6 +70,36 @@ type levelTracker struct {
 	defLevel slog.Level
 	descrs   map[string]string     // package name to description
 	levels   map[string]slog.Level // package name to level
+	minLevel atomic.Int64          // the lowest of defLevel and levels
+}
+
+// Min returns the lowest level any package logs at, so that a record below
+// it can be dropped without finding the package that logged it.
+func (t *levelTracker) Min() slog.Level {
+	return slog.Level(t.minLevel.Load())
+}
+
+// updateMin sets minLevel; t.mut must be held for writing.
+func (t *levelTracker) updateMin() {
+	minLevel := t.defLevel
+	for _, level := range t.levels {
+		minLevel = min(minLevel, level)
+	}
+	t.minLevel.Store(int64(minLevel))
+}
+
+func (t *levelTracker) save() func() {
+	t.mut.RLock()
+	defLevel := t.defLevel
+	levels := maps.Clone(t.levels)
+	t.mut.RUnlock()
+	return func() {
+		t.mut.Lock()
+		t.defLevel = defLevel
+		t.levels = maps.Clone(levels)
+		t.updateMin()
+		t.mut.Unlock()
+	}
 }
 
 func (t *levelTracker) Get(pkg string) slog.Level {
@@ -78,6 +115,7 @@ func (t *levelTracker) Set(pkg string, level slog.Level) {
 	t.mut.Lock()
 	changed := t.levels[pkg] != level
 	t.levels[pkg] = level
+	t.updateMin()
 	t.mut.Unlock()
 	if changed {
 		slog.Info("Changed package log level", "package", pkg, "level", level)
@@ -88,6 +126,7 @@ func (t *levelTracker) SetDefault(level slog.Level) {
 	t.mut.Lock()
 	changed := t.defLevel != level
 	t.defLevel = level
+	t.updateMin()
 	t.mut.Unlock()
 	if changed {
 		slog.Info("Changed default log level", "level", level)

@@ -14,8 +14,11 @@ import (
 )
 
 var (
-	GlobalRecorder    = &lineRecorder{level: -1000}
-	ErrorRecorder     = &lineRecorder{level: slog.LevelError}
+	GlobalRecorder = &lineRecorder{level: -1000}
+	ErrorRecorder  = &lineRecorder{level: slog.LevelError}
+	// WarningRecorder keeps warnings and errors apart from GlobalRecorder,
+	// where debug output can push them out.
+	WarningRecorder   = &lineRecorder{level: slog.LevelWarn}
 	DefaultLineFormat = LineFormat{
 		TimestampFormat: time.DateTime,
 		LevelString:     true,
@@ -26,7 +29,7 @@ var (
 	}
 	globalFormatter = &formattingOptions{
 		LineFormat: DefaultLineFormat,
-		recs:       []*lineRecorder{GlobalRecorder, ErrorRecorder},
+		recs:       []*lineRecorder{GlobalRecorder, ErrorRecorder, WarningRecorder},
 		out:        logWriter(),
 	}
 	slogDef = slog.New(&formattingHandler{opts: globalFormatter})

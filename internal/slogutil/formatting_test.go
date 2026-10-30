@@ -8,7 +8,9 @@ package slogutil
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +74,7 @@ func TestFuncNameToPkg(t *testing.T) {
 		{"t-shaped.nl/sushitrain/v2/src.(*Client).Start", "t-shaped.nl/sushitrain/v2/src", "client"},
 		{"t-shaped.nl/sushitrain/v2/src.LogInfo", "t-shaped.nl/sushitrain/v2/src", ""},
 		{"github.com/thejerf/suture/v4.(*Supervisor).Serve", "github.com/thejerf/suture/v4", "supervisor"},
+		{"gopkg.in/yaml%2ev3.(*parser).parse", "gopkg.in/yaml.v3", "parser"},
 	}
 	for _, tc := range cases {
 		if pkg, typ := funcNameToPkg(tc.fn); pkg != tc.pkg || typ != tc.typ {
@@ -87,5 +90,46 @@ func TestFormattingHandlerRecordsPackage(t *testing.T) {
 	lines := rec.Since(time.Time{})
 	if len(lines) != 1 || lines[0].Package != "slogutil" {
 		t.Fatalf("recorded %+v", lines)
+	}
+}
+
+func TestFormattingHandlerLevels(t *testing.T) {
+	t.Cleanup(SaveLevels())
+	ctx := context.Background()
+	rec := &lineRecorder{level: -1000}
+	h := &formattingHandler{opts: &formattingOptions{recs: []*lineRecorder{rec}}}
+
+	// Records below every package's level are dropped before Handle
+	SetDefaultLevel(slog.LevelWarn)
+	if h.Enabled(ctx, slog.LevelInfo) {
+		t.Error("INFO is enabled below every level")
+	}
+	SetPackageLevel("model", slog.LevelDebug)
+	if !h.Enabled(ctx, slog.LevelDebug) {
+		t.Error("DEBUG is not enabled with a package at DEBUG")
+	}
+
+	// A record without a known caller, as from the log package, gets the
+	// default level
+	_ = h.Handle(ctx, slog.NewRecord(time.Now(), slog.LevelInfo, "An unknown info line", 0))
+	_ = h.Handle(ctx, slog.NewRecord(time.Now(), slog.LevelWarn, "An unknown warning", 0))
+	lines := rec.Since(time.Time{})
+	if len(lines) != 1 || lines[0].Message != "An unknown warning" || lines[0].Package != "" {
+		t.Fatalf("recorded %+v", lines)
+	}
+}
+
+func TestSaveLevels(t *testing.T) {
+	restore := SaveLevels()
+	t.Cleanup(restore)
+	before := PackageLevels()
+	SetDefaultLevel(slog.LevelError)
+	SetPackageLevel("model", slog.LevelDebug)
+	restore()
+	if after := PackageLevels(); !maps.Equal(after, before) {
+		t.Errorf("restored %v, expected %v", after, before)
+	}
+	if globalLevels.Min() > slog.LevelInfo {
+		t.Errorf("minimum level %v after restoring", globalLevels.Min())
 	}
 }
