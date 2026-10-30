@@ -55,6 +55,10 @@ var (
 	testAPIKey = "foobarbaz"
 )
 
+// How long to wait for a config change to take effect. That normally takes
+// milliseconds, so this is only ever waited out by a failing test.
+const configChangeTimeout = 10 * time.Second
+
 func init() {
 	dev1, _ = protocol.DeviceIDFromString("AIR6LPZ-7K4PTTV-UXQSMUU-CPQ5YWH-OEDFIIQ-JUG777G-2YQXXR5-YD6AWQR")
 	apiCfg.GUIReturns(config.GUIConfiguration{APIKey: testAPIKey, RawAddress: "127.0.0.1:0"})
@@ -1017,6 +1021,14 @@ func startHTTP(t *testing.T, cfg config.Wrapper) string {
 }
 
 func startHTTPWithShutdownTimeout(t *testing.T, cfg config.Wrapper, shutdownTimeout time.Duration) string {
+	_, baseURL := startService(t, cfg, shutdownTimeout)
+	return baseURL
+}
+
+// startService starts the API service and returns it with the URL it listens
+// on. Each time the service starts again it waits for the test to receive its
+// address from svc.started; see waitForRestart.
+func startService(t *testing.T, cfg config.Wrapper, shutdownTimeout time.Duration) (*service, string) {
 	m := new(modelmocks.Model)
 	assetDir := "../../gui"
 	eventSub := new(eventmocks.BufferedSubscription)
@@ -1068,7 +1080,55 @@ func startHTTPWithShutdownTimeout(t *testing.T, cfg config.Wrapper, shutdownTime
 	}
 	baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(tcpAddr.Port)))
 
-	return baseURL
+	return svc, baseURL
+}
+
+// waitForRestart waits for the service to start listening again, and returns
+// the URL it now listens on.
+func waitForRestart(t *testing.T, svc *service) string {
+	t.Helper()
+	select {
+	case addr := <-svc.started:
+		return "http://" + addr
+	case <-time.After(configChangeTimeout):
+		t.Fatal("the API service did not restart")
+		return ""
+	}
+}
+
+// startConfig returns a running config wrapper, so that the test can change
+// the configuration under a running service. The given configuration should be
+// based on config.New, as the first change otherwise also fills in its
+// defaults.
+func startConfig(t *testing.T, cfg config.Configuration) config.Wrapper {
+	t.Helper()
+	w := config.Wrap("", cfg, protocol.LocalDeviceID, events.NoopLogger)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Serve(ctx)
+	return w
+}
+
+// changeConfig makes a config change and waits for the subscribers to take it
+// in, failing the test rather than hanging if they don't.
+func changeConfig(t *testing.T, w config.Wrapper, fn config.ModifyFunction) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		waiter, err := w.Modify(fn)
+		if err == nil {
+			waiter.Wait()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(configChangeTimeout):
+		t.Fatal("the config change did not finish")
+	}
 }
 
 func TestCSRFRequired(t *testing.T) {
@@ -1806,6 +1866,62 @@ func TestConfigChanges(t *testing.T) {
 	if opts.MaxSendKbps != 50 {
 		t.Error("Expected 50 for MaxSendKbps, got", opts.MaxSendKbps)
 	}
+}
+
+func TestConfigChangeDuringShutdown(t *testing.T) {
+	t.Parallel()
+
+	// The server waits this long for requests to finish when it shuts down.
+	// That leaves plenty of time for a second change to land in the meantime.
+	const shutdownTimeout = 2 * time.Second
+
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.GUI.RawAddress = "127.0.0.1:0"
+	cfg.GUI.APIKey = testAPIKey
+	w := startConfig(t, cfg)
+	svc, baseURL := startService(t, w, shutdownTimeout)
+
+	// A request with a body that doesn't arrive keeps the server from
+	// finishing its shutdown until we hang up.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(baseURL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "POST /rest/system/error HTTP/1.1\r\nHost: %s\r\nX-API-Key: %s\r\nContent-Length: 1\r\n\r\n", conn.RemoteAddr(), testAPIKey)
+
+	setTheme := func(theme string) {
+		t.Helper()
+		changeConfig(t, w, func(cfg *config.Configuration) {
+			cfg.GUI.Theme = theme
+		})
+	}
+
+	// The first change starts the shutdown, once the service takes the signal.
+	setTheme("first")
+	for len(svc.configChanged) > 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// A second change finds the service on its way out, and must not get
+	// stuck on that: the service waits for it when it unsubscribes.
+	setTheme("second")
+	conn.Close()
+	baseURL = waitForRestart(t, svc)
+
+	if len(svc.configChanged) != 0 {
+		t.Error("the second change would restart the service for no reason")
+	}
+	if theme := svc.cfg.GUI().Theme; theme != "second" {
+		t.Errorf("service restarted with theme %q", theme)
+	}
+	if resp := httpGet(baseURL+"/rest/noauth/health", "", "", "", "", nil, t); resp.StatusCode != http.StatusOK {
+		t.Errorf("unexpected status %d after the restart", resp.StatusCode)
+	}
+
+	// The config queue keeps working, and the service keeps following it.
+	setTheme("third")
+	waitForRestart(t, svc)
 }
 
 func TestSanitizedHostname(t *testing.T) {

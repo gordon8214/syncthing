@@ -260,15 +260,18 @@ func authLDAP(username string, password string, cfg config.LDAPConfiguration) bo
 		return false
 	}
 
+	defer connection.Close()
+
 	if cfg.Transport == config.LDAPTransportStartTLS {
-		err = connection.StartTLS(&tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify})
+		err = connection.StartTLS(&tls.Config{
+			ServerName:         hostname,
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		})
 		if err != nil {
 			slog.Error("Failed to handshake start TLS With LDAP server", slogutil.Error(err))
 			return false
 		}
 	}
-
-	defer connection.Close()
 
 	bindDN := formatOptionalPercentS(cfg.BindDN, ldap.EscapeDN(username))
 	err = connection.Bind(bindDN, password)

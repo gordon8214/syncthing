@@ -7,6 +7,9 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"math"
 	"net/http"
 	"slices"
@@ -107,6 +110,45 @@ func (m *tokenManager) Delete(token string) {
 	m.saveLocked()
 }
 
+// SetLifetime sets the lifetime that tokens get from now on, when created or
+// checked.
+func (m *tokenManager) SetLifetime(lifetime time.Duration) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	m.lifetime = lifetime
+}
+
+// Clear removes all tokens. As this revokes access it doesn't wait for the
+// delayed save, and any such save still pending is called off.
+func (m *tokenManager) Clear() error {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	clear(m.tokens.Tokens)
+	if m.saveTimer != nil {
+		m.saveTimer.Stop()
+		m.saveTimer = nil
+	}
+	return m.writeLocked()
+}
+
+// BindCredentials ties the tokens to the given credentials, by removing them
+// all unless they already belong to those credentials. It works from what is
+// stored because not all changes pass through a running service: the GUI can
+// be off when they're made, or the engine stopped.
+func (m *tokenManager) BindCredentials(fingerprint string) error {
+	key := m.key + "Credentials"
+	if bound, ok, _ := m.miscDB.String(key); ok && bound == fingerprint {
+		return nil
+	}
+	// In this order, so that a failure gets another go next time.
+	if err := m.Clear(); err != nil {
+		return err
+	}
+	return m.miscDB.PutString(key, fingerprint)
+}
+
 func (m *tokenManager) saveLocked() {
 	// Remove expired tokens.
 	now := m.timeNow().UnixNano()
@@ -150,8 +192,23 @@ func (m *tokenManager) scheduledSave() {
 
 	m.saveTimer = nil
 
+	_ = m.writeLocked() // can fail, but what are we going to do?
+}
+
+func (m *tokenManager) writeLocked() error {
 	bs, _ := proto.Marshal(m.tokens) // can't fail
-	_ = m.miscDB.PutBytes(m.key, bs) // can fail, but what are we going to do?
+	return m.miscDB.PutBytes(m.key, bs)
+}
+
+// credentialsFingerprint returns a digest of what decides who can log in.
+func credentialsFingerprint(guiCfg config.GUIConfiguration, ldapCfg config.LDAPConfiguration) string {
+	h := sha256.New()
+	if guiCfg.AuthMode == config.AuthModeLDAP {
+		fmt.Fprintf(h, "ldap %#v", ldapCfg)
+	} else {
+		fmt.Fprintf(h, "static %q %q", guiCfg.User, guiCfg.Password)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type tokenCookieManager struct {
@@ -162,17 +219,18 @@ type tokenCookieManager struct {
 	tokens     *tokenManager
 }
 
-func newTokenCookieManager(shortID string, guiCfg config.GUIConfiguration, evLogger events.Logger, miscDB *db.Typed) *tokenCookieManager {
+func newTokenCookieManager(shortID string, guiCfg config.GUIConfiguration, evLogger events.Logger, tokens *tokenManager) *tokenCookieManager {
 	sessionLifetimeS := guiCfg.SessionCookieDurationS
 	if sessionLifetimeS == 0 {
 		sessionLifetimeS = defaultSessionCookieDurationS
 	}
+	tokens.SetLifetime(time.Duration(sessionLifetimeS) * time.Second)
 	return &tokenCookieManager{
 		cookieName: "sessionid-" + shortID,
 		shortID:    shortID,
 		guiCfg:     guiCfg,
 		evLogger:   evLogger,
-		tokens:     newTokenManager("sessions", miscDB, time.Duration(sessionLifetimeS)*time.Second, maxActiveSessions),
+		tokens:     tokens,
 	}
 }
 

@@ -93,6 +93,7 @@ type service struct {
 	listenerAddr         net.Addr
 	exitChan             chan *svcutil.FatalErr
 	miscDB               *db.Typed
+	sessions             *tokenManager // outlives each run of Serve, as the sessions do
 	shutdownTimeout      time.Duration
 
 	guiErrors slogutil.Recorder
@@ -126,10 +127,11 @@ func New(id protocol.DeviceID, cfg config.Wrapper, assetDir, tlsDefaultCommonNam
 		systemLog:            systemLog,
 		noUpgrade:            noUpgrade,
 		tlsDefaultCommonName: tlsDefaultCommonName,
-		configChanged:        make(chan struct{}),
+		configChanged:        make(chan struct{}, 1),
 		startedOnce:          make(chan struct{}),
 		exitChan:             make(chan *svcutil.FatalErr, 1),
 		miscDB:               miscDB,
+		sessions:             newTokenManager("sessions", miscDB, defaultSessionCookieDurationS*time.Second, maxActiveSessions),
 		shutdownTimeout:      100 * time.Millisecond,
 	}
 }
@@ -217,6 +219,13 @@ func sendJSON(w http.ResponseWriter, jsonObject any) {
 }
 
 func (s *service) Serve(ctx context.Context) error {
+	// A change that came in while the previous run was stopping is already in
+	// the configuration we're about to read.
+	select {
+	case <-s.configChanged:
+	default:
+	}
+
 	listener, err := s.getListener(s.cfg.GUI())
 	if err != nil {
 		select {
@@ -360,6 +369,12 @@ func (s *service) Serve(ctx context.Context) error {
 	mux.Handle("/metrics", promHttpHandler)
 
 	guiCfg := s.cfg.GUI()
+	ldapCfg := s.cfg.LDAP()
+
+	// Sessions don't outlive the credentials they were created with.
+	if err := s.sessions.BindCredentials(credentialsFingerprint(guiCfg, ldapCfg)); err != nil {
+		slog.WarnContext(ctx, "Failed to clear sessions after credentials change", slogutil.Error(err))
+	}
 
 	// Wrap everything in CSRF protection. The /rest prefix should be
 	// protected, other requests will grant cookies.
@@ -370,8 +385,8 @@ func (s *service) Serve(ctx context.Context) error {
 
 	// Wrap everything in basic auth, if user/password is set.
 	if guiCfg.IsAuthEnabled() {
-		tokenCookieManager := newTokenCookieManager(s.id.Short().String(), guiCfg, s.evLogger, s.miscDB)
-		authMW := newBasicAuthAndSessionMiddleware(tokenCookieManager, guiCfg, s.cfg.LDAP(), handler, s.evLogger)
+		tokenCookieManager := newTokenCookieManager(s.id.Short().String(), guiCfg, s.evLogger, s.sessions)
+		authMW := newBasicAuthAndSessionMiddleware(tokenCookieManager, guiCfg, ldapCfg, handler, s.evLogger)
 		handler = authMW
 
 		restMux.Handler(http.MethodPost, "/rest/noauth/auth/password", http.HandlerFunc(authMW.passwordAuthHandler))
@@ -486,7 +501,7 @@ func (*service) VerifyConfiguration(_, to config.Configuration) error {
 }
 
 func (s *service) CommitConfiguration(from, to config.Configuration) bool {
-	if to.GUI == from.GUI {
+	if to.GUI == from.GUI && to.LDAP == from.LDAP {
 		// No GUI changes, we're done here.
 		return true
 	}
@@ -495,8 +510,14 @@ func (s *service) CommitConfiguration(from, to config.Configuration) bool {
 		s.statics.setTheme(to.GUI.Theme)
 	}
 
-	// Tell the serve loop to restart
-	s.configChanged <- struct{}{}
+	// Tell the serve loop to restart. We can't block until it takes the
+	// signal: if it is stopping already, it is waiting for us in Unsubscribe.
+	// A signal that is still pending covers this change too, as the serve
+	// loop reads the configuration when it starts.
+	select {
+	case s.configChanged <- struct{}{}:
+	default:
+	}
 
 	return true
 }
