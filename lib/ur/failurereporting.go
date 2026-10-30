@@ -163,6 +163,9 @@ func (h *failureHandler) applyOpts(opts config.OptionsConfiguration, sub events.
 	if sub != nil {
 		sub.Unsubscribe()
 	}
+	// Whoever turned reporting off doesn't want what is waiting to be sent
+	// to go out either.
+	clear(h.buf)
 	return url, nil, nil
 }
 
@@ -181,7 +184,8 @@ func (h *failureHandler) addReport(data contract.FailureData, evTime time.Time) 
 }
 
 func (h *failureHandler) CommitConfiguration(from, to config.Configuration) bool {
-	if from.Options.CREnabled != to.Options.CREnabled || from.Options.CRURL != to.Options.CRURL {
+	if from.Options.CREnabled != to.Options.CREnabled || from.Options.CRURL != to.Options.CRURL ||
+		from.Options.URAccepted != to.Options.URAccepted {
 		h.optsChan <- to.Options
 	}
 	return true
