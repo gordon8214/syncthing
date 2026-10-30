@@ -21,6 +21,7 @@ type Line struct {
 	When    time.Time  `json:"when"`
 	Message string     `json:"message"`
 	Level   slog.Level `json:"level"`
+	Package string     `json:"-"` // the package that logged it, if known
 }
 
 func (l *Line) WriteTo(w io.Writer, f LineFormat) (int64, error) {

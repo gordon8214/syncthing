@@ -56,3 +56,36 @@ func TestFormattingHandler(t *testing.T) {
 		t.Error("mismatch")
 	}
 }
+
+func TestFuncNameToPkg(t *testing.T) {
+	cases := []struct {
+		fn, pkg, typ string
+	}{
+		{"github.com/syncthing/syncthing/lib/model.(*folder).Scan", "model", "folder"},
+		{"github.com/syncthing/syncthing/lib/model.(*model).Serve.func1", "model", ""},
+		{"github.com/syncthing/syncthing/lib/api.(*service).Serve", "api", ""},
+		{"github.com/syncthing/syncthing/lib/relay/client.(*staticClient).Serve", "relay/client", "staticclient"},
+		{"github.com/syncthing/syncthing/internal/db/sqlite.(*DB).Update", "db/sqlite", "db"},
+		{"github.com/syncthing/syncthing/lib/fs.init.0", "fs", "init"},
+		{"main.main", "main", ""},
+		// Paths outside the module keep their dots
+		{"t-shaped.nl/sushitrain/v2/src.(*Client).Start", "t-shaped.nl/sushitrain/v2/src", "client"},
+		{"t-shaped.nl/sushitrain/v2/src.LogInfo", "t-shaped.nl/sushitrain/v2/src", ""},
+		{"github.com/thejerf/suture/v4.(*Supervisor).Serve", "github.com/thejerf/suture/v4", "supervisor"},
+	}
+	for _, tc := range cases {
+		if pkg, typ := funcNameToPkg(tc.fn); pkg != tc.pkg || typ != tc.typ {
+			t.Errorf("%s: got %q, %q; expected %q, %q", tc.fn, pkg, typ, tc.pkg, tc.typ)
+		}
+	}
+}
+
+func TestFormattingHandlerRecordsPackage(t *testing.T) {
+	rec := &lineRecorder{level: slog.LevelDebug}
+	h := &formattingHandler{opts: &formattingOptions{recs: []*lineRecorder{rec}}}
+	slog.New(h).Info("A line")
+	lines := rec.Since(time.Time{})
+	if len(lines) != 1 || lines[0].Package != "slogutil" {
+		t.Fatalf("recorded %+v", lines)
+	}
+}

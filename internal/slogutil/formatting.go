@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type LineFormat struct {
 type formattingOptions struct {
 	LineFormat
 
+	outMut       sync.Mutex // guards out, and serializes writes to it
 	out          io.Writer
 	recs         []*lineRecorder
 	timeOverride time.Time
@@ -42,6 +44,14 @@ func SetLineFormat(f LineFormat) {
 	globalFormatter.LineFormat = f
 }
 
+// SetOutput sets where log lines are written, instead of standard output.
+// Lines are written one at a time, so w need not be safe for concurrent use.
+func SetOutput(w io.Writer) {
+	globalFormatter.outMut.Lock()
+	globalFormatter.out = w
+	globalFormatter.outMut.Unlock()
+}
+
 var _ slog.Handler = (*formattingHandler)(nil)
 
 func (h *formattingHandler) Enabled(context.Context, slog.Level) bool {
@@ -51,8 +61,10 @@ func (h *formattingHandler) Enabled(context.Context, slog.Level) bool {
 func (h *formattingHandler) Handle(_ context.Context, rec slog.Record) error {
 	fr := runtime.CallersFrames([]uintptr{rec.PC})
 	var logAttrs []any
+	var pkgName string
 	if fram, _ := fr.Next(); fram.Function != "" {
-		pkgName, typeName := funcNameToPkg(fram.Function)
+		var typeName string
+		pkgName, typeName = funcNameToPkg(fram.Function)
 		lvl := globalLevels.Get(pkgName)
 		if lvl > rec.Level {
 			// Logging not enabled at the record's level
@@ -102,6 +114,7 @@ func (h *formattingHandler) Handle(_ context.Context, rec slog.Record) error {
 		When:    cmp.Or(h.opts.timeOverride, rec.Time),
 		Message: sb.String(),
 		Level:   rec.Level,
+		Package: pkgName,
 	}
 
 	// If there is a recorder, record the line.
@@ -110,9 +123,11 @@ func (h *formattingHandler) Handle(_ context.Context, rec slog.Record) error {
 	}
 
 	// If there's an output, print the line.
+	h.opts.outMut.Lock()
 	if h.opts.out != nil {
 		_, _ = line.WriteTo(h.opts.out, h.opts.LineFormat)
 	}
+	h.opts.outMut.Unlock()
 	return nil
 }
 
@@ -181,12 +196,19 @@ func funcNameToPkg(fn string) (string, string) {
 	fn = strings.TrimPrefix(fn, "github.com/syncthing/syncthing/lib/")
 	fn = strings.TrimPrefix(fn, "github.com/syncthing/syncthing/internal/")
 
-	pkgTypFn := strings.Split(fn, ".") // [package, type, method] or [package, function]
-	if len(pkgTypFn) <= 2 {
-		return pkgTypFn[0], ""
+	// The package path ends at the first dot after its last slash: other
+	// modules' paths contain dots (t-shaped.nl/sushitrain/v2/src.Func).
+	var dir string
+	if i := strings.LastIndex(fn, "/"); i >= 0 {
+		dir, fn = fn[:i+1], fn[i+1:]
 	}
 
-	pkg := pkgTypFn[0]
+	pkgTypFn := strings.Split(fn, ".") // [package, type, method] or [package, function]
+	if len(pkgTypFn) <= 2 {
+		return dir + pkgTypFn[0], ""
+	}
+
+	pkg := dir + pkgTypFn[0]
 	// Remove parenthesis and asterisk from the type name
 	typ := strings.TrimLeft(strings.TrimRight(pkgTypFn[1], ")"), "(*")
 	// Skip certain type names that add no value

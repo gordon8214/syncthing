@@ -25,6 +25,13 @@ func RegisterPackage(descr string) {
 	registerPackage(descr, 2)
 }
 
+// RegisterCallerPackage registers, as RegisterPackage does, the package of a
+// function skip frames above the caller, so that a function can register
+// the package that calls it.
+func RegisterCallerPackage(descr string, skip int) {
+	registerPackage(descr, 2+skip)
+}
+
 func NewAdapter(descr string) *adapter {
 	registerPackage(descr, 2)
 	return &adapter{slogDef}
