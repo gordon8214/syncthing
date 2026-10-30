@@ -298,6 +298,12 @@ func (f *FolderConfiguration) prepare(myID protocol.DeviceID, existingDevices ma
 		f.RescanIntervalS = 0
 	}
 
+	// A value that overflows as a duration makes the scanner panic in
+	// time.NewTicker. Negative values are valid: they disable progress events.
+	if f.ScanProgressIntervalS > MaxRescanIntervalS {
+		f.ScanProgressIntervalS = MaxRescanIntervalS
+	}
+
 	if f.FSWatcherDelayS <= 0 {
 		f.FSWatcherEnabled = false
 		f.FSWatcherDelayS = 10

@@ -13,6 +13,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -759,6 +760,35 @@ func TestLargeRescanInterval(t *testing.T) {
 	}
 	if wrapper.Folders()["l2"].RescanIntervalS != 0 {
 		t.Error("negative rescan interval should become zero")
+	}
+}
+
+func TestLargeScanProgressInterval(t *testing.T) {
+	testcases := []struct {
+		configured int
+		expected   int
+	}{
+		// Overflows to a negative duration, which time.NewTicker panics on.
+		{math.MaxInt, MaxRescanIntervalS},
+		{MaxRescanIntervalS + 1, MaxRescanIntervalS},
+		{MaxRescanIntervalS, MaxRescanIntervalS},
+		{5, 5},
+		// Zero is the default interval and a negative value turns progress
+		// events off, so neither may be replaced by the other.
+		{0, 0},
+		{-1, -1},
+		{math.MinInt, math.MinInt},
+	}
+
+	for _, tc := range testcases {
+		doc := fmt.Sprintf(`<configuration version="%d"><folder id="f" path="~/Sync"><scanProgressIntervalS>%d</scanProgressIntervalS></folder></configuration>`, CurrentVersion, tc.configured)
+		cfg, _, err := ReadXML(strings.NewReader(doc), device1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actual := cfg.Folders[0].ScanProgressIntervalS; actual != tc.expected {
+			t.Errorf("scan progress interval %d: got %d, expected %d", tc.configured, actual, tc.expected)
+		}
 	}
 }
 
