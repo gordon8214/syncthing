@@ -598,6 +598,44 @@ func TestAvailability(t *testing.T) {
 	}
 }
 
+func TestAvailabilitySkipsInvalid(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	const folderID = "test"
+	holder, ignoring := protocol.DeviceID{42}, protocol.DeviceID{45}
+
+	// A device that ignores a file announces it as invalid at the global
+	// version, which says nothing about having its contents.
+	file := genFile("test1", 1, 1)
+	if err := db.Update(folderID, holder, []protocol.FileInfo{file}); err != nil {
+		t.Fatal(err)
+	}
+	invalid := file
+	invalid.Sequence = 2
+	invalid.Blocks = nil
+	invalid.LocalFlags = protocol.FlagLocalRemoteInvalid
+	if err := db.Update(folderID, ignoring, []protocol.FileInfo{invalid}); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := db.GetGlobalAvailability(folderID, "test1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != 1 || a[0] != holder {
+		t.Log(a)
+		t.Error("expected only the device with a valid entry")
+	}
+}
+
 func TestDropFilesNamed(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
