@@ -265,3 +265,9 @@ func (m *model) LocalIndexID(folder string) (protocol.IndexID, error) {
 func (m *model) LocalSequence(folder string) (int64, error) {
 	return m.sdb.GetDeviceSequence(folder, protocol.LocalDeviceID)
 }
+
+// DeviceFile returns the index entry another device last announced for file,
+// which for a device that is away can be from long ago.
+func (m *model) DeviceFile(folder string, device protocol.DeviceID, file string) (protocol.FileInfo, bool, error) {
+	return m.sdb.GetDeviceFile(folder, device, file)
+}

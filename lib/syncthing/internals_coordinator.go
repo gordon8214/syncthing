@@ -21,6 +21,7 @@ type coordinatedModel interface {
 	RunInFolderLoop(ctx context.Context, folder string, fn func(context.Context, model.FolderHandle) error) error
 	LocalIndexID(folder string) (protocol.IndexID, error)
 	LocalSequence(folder string) (int64, error)
+	DeviceFile(folder string, device protocol.DeviceID, file string) (protocol.FileInfo, bool, error)
 }
 
 var errNotCoordinated = errors.New("model does not support coordinated changes")
@@ -68,4 +69,14 @@ func (m *Internals) LocalSequence(folderID string) (int64, error) {
 // LocalFileInfo returns this device's index entry for path.
 func (m *Internals) LocalFileInfo(folderID, path string) (protocol.FileInfo, bool, error) {
 	return m.model.CurrentFolderFile(folderID, path)
+}
+
+// DeviceFileInfo returns the index entry another device last announced for
+// path, which for a device that is away can be from long ago.
+func (m *Internals) DeviceFileInfo(folderID string, device protocol.DeviceID, path string) (protocol.FileInfo, bool, error) {
+	c, err := m.coordinated()
+	if err != nil {
+		return protocol.FileInfo{}, false, err
+	}
+	return c.DeviceFile(folderID, device, path)
 }

@@ -112,6 +112,24 @@ func TestRunInFolderLoopCommitsLikeAScan(t *testing.T) {
 	}
 }
 
+func TestDeviceFileIsWhatTheDeviceAnnounced(t *testing.T) {
+	m, fcfg := setupCoordinatedFolder(t, nil)
+	conn := addFakeConn(m, device1, fcfg.ID)
+	must(t, os.WriteFile(filepath.Join(fcfg.Path, "a.txt"), []byte("here"), 0o644))
+	must(t, m.ScanFolder(fcfg.ID))
+
+	if _, ok, err := m.DeviceFile(fcfg.ID, device1, "a.txt"); err != nil || ok {
+		t.Fatalf("entry the device never announced: %v %v", ok, err)
+	}
+	announced := protocol.FileInfo{Name: "a.txt", Version: protocol.Vector{}.Update(device1.Short()), Deleted: true}
+	must(t, m.Index(conn, &protocol.Index{Folder: fcfg.ID, Files: []protocol.FileInfo{announced}}))
+	file, ok, err := m.DeviceFile(fcfg.ID, device1, "a.txt")
+	must(t, err)
+	if !ok || !file.Deleted || !file.Version.Equal(announced.Version) {
+		t.Fatalf("got %v", file)
+	}
+}
+
 func TestRunInFolderLoopCreatesAndDeletes(t *testing.T) {
 	m, fcfg := setupCoordinatedFolder(t, nil)
 	err := m.RunInFolderLoop(t.Context(), fcfg.ID, func(ctx context.Context, h FolderHandle) error {
