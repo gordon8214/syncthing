@@ -203,6 +203,46 @@ func expectURLToContain(t *testing.T, url, exp string) {
 	}
 }
 
+func TestStaticsOutsideAssetDir(t *testing.T) {
+	t.Parallel()
+
+	// These paths don't need signing in, so a path outside the asset dir must
+	// answer the same whether it exists or not.
+	cfg := newMockedConfig()
+	cfg.GUIReturns(config.GUIConfiguration{User: "user", Password: "hash", RawAddress: "127.0.0.1:0"})
+	baseURL := startHTTP(t, cfg)
+
+	// The asset dir is ../../gui, so unless refused each of these ends up in
+	// the root of the repository, where go.mod exists.
+	prefixes := []string{
+		"/theme-assets/..%2f",              // the theme leaves the asset dir
+		"/theme-assets/%2e%2e/",            // the same with escaped dots
+		"/theme-assets/default/..%2f..%2f", // the file leaves the theme
+		"/theme-assets/default/..%5c..%5c", // the same with Windows separators
+		"/assets/..%2f..%2f",               // the file leaves the configured theme
+	}
+	for _, prefix := range prefixes {
+		for _, file := range []string{"go.mod", "nosuchfile"} {
+			testHTTPRequest(t, baseURL, httpTestCase{URL: prefix + file, Code: 404, Prefix: "404 page not found"}, "")
+		}
+	}
+
+	// Real pages still load, with the theme in this config being empty, and a
+	// theme that doesn't exist still falls back to the default one.
+	paths := []string{
+		"/",
+		"/index.html",
+		"/assets/css/overrides.css",
+		"/syncthing/core/syncthingController.js",
+		"/vendor/bootstrap/css/bootstrap.css",
+		"/theme-assets/light/assets/css/theme.css",
+		"/theme-assets/nosuchtheme/assets/css/overrides.css",
+	}
+	for _, path := range paths {
+		testHTTPRequest(t, baseURL, httpTestCase{URL: path, Code: 200}, "")
+	}
+}
+
 func TestDirNames(t *testing.T) {
 	t.Parallel()
 

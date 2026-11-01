@@ -97,6 +97,19 @@ func (s *staticsServer) serveAsset(w http.ResponseWriter, r *http.Request) {
 
 		theme = path[:i]
 		file = path[i+1:]
+
+		// Only a theme from the path is checked, as the configured one may be empty.
+		if !filepath.IsLocal(theme) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// Static files need no sign-in, so refuse a path that leaves the asset dir
+	// before looking at the disk, or the answer reveals whether it exists.
+	if !filepath.IsLocal(file) {
+		http.NotFound(w, r)
+		return
 	}
 
 	// Check for an override for the current theme.
