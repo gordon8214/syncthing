@@ -8,12 +8,14 @@ package versioner
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
+	"path/filepath"
 	"time"
 
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/osutil"
 )
 
 func init() {
@@ -29,8 +31,7 @@ type trashcan struct {
 }
 
 func newTrashcan(cfg config.FolderConfiguration) Versioner {
-	cleanoutDays, _ := strconv.Atoi(cfg.Versioning.Params["cleanoutDays"])
-	// On error we default to 0, "do not clean out the trash can"
+	cleanoutDays := parseCleanoutDays(cfg.Versioning.Params["cleanoutDays"])
 
 	s := &trashcan{
 		folderFs:        cfg.Filesystem(),
@@ -83,7 +84,7 @@ func (t *trashcan) Clean(ctx context.Context) error {
 			return nil
 		}
 
-		if info.ModTime().Before(cutoff) {
+		if archivedAt(path, info).Before(cutoff) {
 			// The file is too old; remove it.
 			err = t.versionsFs.Remove(path)
 		} else {
@@ -107,15 +108,11 @@ func (t *trashcan) GetVersions() (map[string][]FileVersion, error) {
 	return retrieveVersions(t.versionsFs)
 }
 
-func (t *trashcan) Restore(filepath string, versionTime time.Time) error {
+func (t *trashcan) Restore(name string, versionTime time.Time) error {
 	// If we have an untagged file A and want to restore it on top of existing file A, we can't first archive the
 	// existing A as we'd overwrite the old A version, therefore when we archive existing file, we archive it with a
 	// tag but when the restoration is finished, we rename it (untag it). This is only important if when restoring A,
 	// there already exists a file at the same location
-
-	// If we restore a deleted file, there won't be a conflict and archiving won't happen thus there won't be anything
-	// in the archive to rename afterwards. Log whether the file exists prior to restoring.
-	_, dstPathErr := t.folderFs.Lstat(filepath)
 
 	taggedName := ""
 	tagger := func(name, tag string) string {
@@ -123,26 +120,50 @@ func (t *trashcan) Restore(filepath string, versionTime time.Time) error {
 		// should just return the plain name, and second time by archive which archives existing file in the folder.
 		// We can't use TagFilename here, as restoreFile would discover that as a valid version and restore that instead.
 		if taggedName != "" {
-			return taggedName
+			// Archiving goes by the name in its directory
+			return filepath.Base(taggedName)
 		}
 
 		taggedName = fs.TempName(name)
+
+		// A folder that used another type of versioner before has tagged versions, which are listed along with the rest
+		if tagged := TagFilename(name, tag); tagged != name {
+			if _, err := t.versionsFs.Lstat(tagged); err == nil {
+				return tagged
+			}
+		}
 		return name
 	}
 
-	if err := restoreFile(t.copyRangeMethod, t.versionsFs, t.folderFs, filepath, versionTime, tagger); taggedName == "" {
+	restoreErr := restoreFile(t.copyRangeMethod, t.versionsFs, t.folderFs, name, versionTime, tagger)
+
+	// Nothing was in the way, or it could not be moved
+	if _, err := t.versionsFs.Lstat(taggedName); err != nil {
+		return restoreErr
+	}
+
+	// The version is still where it was, so the file goes back to where it was too
+	if restoreErr != nil {
+		return errors.Join(restoreErr, osutil.RenameOrCopy(t.copyRangeMethod, t.versionsFs, t.folderFs, taggedName, name))
+	}
+
+	if err := t.versionsFs.Rename(taggedName, name); err != nil {
 		return err
 	}
 
-	// If a deleted file was restored, even though the RenameOrCopy method is robust, check if the file exists and
-	// skip the renaming function if this is the case.
-	if fs.IsNotExist(dstPathErr) {
-		if _, err := t.folderFs.Lstat(filepath); err != nil {
-			return err
-		}
+	// Cleaning up goes by this time. This is when the file became a version, as in Archive.
+	now := time.Now()
+	return t.versionsFs.Chtimes(name, now, now)
+}
 
-		return nil
+// archivedAt is when an entry of the trash can was archived. That is its
+// modification time, as Archive sets it. Tagged versions come from a folder
+// that used another versioner before, and have the time of the file instead.
+// The later of the two counts, as a name can look tagged without being so.
+func archivedAt(path string, info fs.FileInfo) time.Time {
+	tagged, err := time.ParseInLocation(TimeFormat, extractTag(path), time.Local)
+	if err == nil && tagged.After(info.ModTime()) {
+		return tagged
 	}
-
-	return t.versionsFs.Rename(taggedName, filepath)
+	return info.ModTime()
 }

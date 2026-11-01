@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +35,9 @@ var (
 
 const (
 	DefaultPath = ".stversions"
+
+	// The most days that still fit a time.Duration
+	maxCleanoutDays = int(math.MaxInt64 / int64(24*time.Hour))
 )
 
 // TagFilename inserts ~tag just before the extension of the filename.
@@ -46,6 +51,17 @@ func TagFilename(name, tag string) string {
 var tagExp = regexp.MustCompile(`.*~([^~.]+)(?:\.[^.]+)?$`)
 
 // extractTag returns the tag from a filename, whether at the end or middle.
+// parseCleanoutDays reads how many days versions are kept, where 0 keeps them
+// for good. That goes for what can't be read, and for what doesn't fit a
+// time.Duration, which would overflow into removing every version.
+func parseCleanoutDays(value string) int {
+	days, err := strconv.Atoi(value)
+	if err != nil || days > maxCleanoutDays {
+		return 0
+	}
+	return days
+}
+
 func extractTag(path string) string {
 	match := tagExp.FindStringSubmatch(path)
 	// match is []string{"whole match", "submatch"} when successful
@@ -273,6 +289,34 @@ func dupDirTree(srcFs, dstFs fs.Filesystem, path string) error {
 func restoreFile(method fs.CopyRangeMethod, src, dst fs.Filesystem, filePath string, versionTime time.Time, tagger fileTagger) error {
 	tag := versionTime.In(time.Local).Truncate(time.Second).Format(TimeFormat)
 	taggedFilePath := tagger(filePath, tag)
+	nativePath := osutil.NativeFilename(filePath)
+
+	// Find the version first. Whatever is in the folder only goes out of the
+	// way once there is something to put in its place: a version that is gone
+	// would otherwise cost the file, and other devices would delete it too.
+	sourceFile := ""
+	sourceMtime := time.Time{}
+	if info, err := src.Lstat(taggedFilePath); err == nil && info.IsRegular() {
+		sourceFile = taggedFilePath
+		sourceMtime = info.ModTime()
+	} else if err == nil {
+		l.Debugln("restore:", taggedFilePath, "not regular")
+	} else {
+		l.Debugln("restore:", taggedFilePath, err.Error())
+	}
+
+	// Check for untagged file
+	if sourceFile == "" {
+		info, err := src.Lstat(nativePath)
+		if err == nil && info.IsRegular() && info.ModTime().Truncate(time.Second).Equal(versionTime) {
+			sourceFile = nativePath
+			sourceMtime = info.ModTime()
+		}
+	}
+
+	if sourceFile == "" {
+		return errNotFound
+	}
 
 	// If the something already exists where we are restoring to, archive existing file for versioning
 	// remove if it's a symlink, or fail if it's a directory
@@ -296,45 +340,17 @@ func restoreFile(method fs.CopyRangeMethod, src, dst fs.Filesystem, filePath str
 		return err
 	}
 
-	filePath = osutil.NativeFilename(filePath)
-
-	// Try and find a file that has the correct mtime
-	sourceFile := ""
-	sourceMtime := time.Time{}
-	if info, err := src.Lstat(taggedFilePath); err == nil && info.IsRegular() {
-		sourceFile = taggedFilePath
-		sourceMtime = info.ModTime()
-	} else if err == nil {
-		l.Debugln("restore:", taggedFilePath, "not regular")
-	} else {
-		l.Debugln("restore:", taggedFilePath, err.Error())
-	}
-
-	// Check for untagged file
-	if sourceFile == "" {
-		info, err := src.Lstat(filePath)
-		if err == nil && info.IsRegular() && info.ModTime().Truncate(time.Second).Equal(versionTime) {
-			sourceFile = filePath
-			sourceMtime = info.ModTime()
-		}
-
-	}
-
-	if sourceFile == "" {
-		return errNotFound
-	}
-
 	// Check that the target location of where we are supposed to restore does not exist.
 	// This should have been taken care of by the first few lines of this function.
-	if _, err := dst.Lstat(filePath); err == nil {
+	if _, err := dst.Lstat(nativePath); err == nil {
 		return errFileAlreadyExists
 	} else if !fs.IsNotExist(err) {
 		return err
 	}
 
-	_ = dst.MkdirAll(filepath.Dir(filePath), fs.ModePerm)
-	err := osutil.RenameOrCopy(method, src, dst, sourceFile, filePath)
-	_ = dst.Chtimes(filePath, sourceMtime, sourceMtime)
+	_ = dst.MkdirAll(filepath.Dir(nativePath), fs.ModePerm)
+	err := osutil.RenameOrCopy(method, src, dst, sourceFile, nativePath)
+	_ = dst.Chtimes(nativePath, sourceMtime, sourceMtime)
 	return err
 }
 

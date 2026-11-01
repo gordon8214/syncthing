@@ -51,6 +51,16 @@ const platformRefName = "user.syncthing.platform-history"
 
 var platformRoot = filepath.Join(DefaultPath, "platform")
 
+// IsPlatformHistoryPath reports whether a path in a list of versions is one of
+// the versioner's own files. They are in the versions directory, so a listing
+// has them as files once a folder no longer keeps platform history, and they
+// can be there next to it while it does.
+func IsPlatformHistoryPath(name string) bool {
+	dir, base := filepath.Split(name)
+	return filepath.Clean(dir) == platformRoot &&
+		(strings.HasSuffix(base, ".json.gz") || strings.HasSuffix(base, ".pending.json"))
+}
+
 type platformRef struct {
 	ID      string `json:"id"`
 	Restore bool   `json:"restore,omitempty"`

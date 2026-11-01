@@ -8,6 +8,7 @@ package versioner
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -261,4 +262,184 @@ func TestTrashcanCleanOut(t *testing.T) {
 			t.Error("empty directory should have been removed")
 		}
 	})
+}
+
+func trashcanForRestoring(t *testing.T) (Versioner, fs.Filesystem, fs.Filesystem) {
+	t.Helper()
+	versions := t.TempDir()
+	cfg := config.FolderConfiguration{
+		FilesystemType: config.FilesystemTypeBasic,
+		Path:           t.TempDir(),
+		Versioning: config.VersioningConfiguration{
+			FSType: config.FilesystemTypeBasic,
+			FSPath: versions,
+			Params: map[string]string{"cleanoutDays": "30"},
+		},
+	}
+	return newTrashcan(cfg), cfg.Filesystem(), fs.NewFilesystem(fs.FilesystemTypeBasic, versions)
+}
+
+// Going through with a restore without having found the version would cost the
+// file in the folder, and other devices would delete it as well.
+func TestTrashcanRestoreOfAVersionThatIsGoneKeepsTheFile(t *testing.T) {
+	versioner, folderFs, versionsFs := trashcanForRestoring(t)
+	writeFile(t, folderFs, "file", "current")
+
+	if err := versioner.Restore("file", time.Now().Add(-time.Hour)); !errors.Is(err, errNotFound) {
+		t.Fatalf("got %v", err)
+	}
+	if content := readFile(t, folderFs, "file"); content != "current" {
+		t.Fatalf("the file is now %q", content)
+	}
+	if entries, err := versionsFs.DirNames("."); err != nil || len(entries) != 0 {
+		t.Fatalf("left in the versions: %v, %v", entries, err)
+	}
+}
+
+func TestTrashcanRestoresAFileInADirectory(t *testing.T) {
+	versioner, folderFs, versionsFs := trashcanForRestoring(t)
+	if err := folderFs.MkdirAll("dir/sub", 0o777); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, folderFs, "dir/sub/file", "old")
+	if err := versioner.Archive("dir/sub/file"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, folderFs, "dir/sub/file", "current")
+
+	versions, err := versioner.GetVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := versioner.Restore("dir/sub/file", versions["dir/sub/file"][0].VersionTime); err != nil {
+		t.Fatal(err)
+	}
+	if content := readFile(t, folderFs, "dir/sub/file"); content != "old" {
+		t.Fatalf("the file is now %q", content)
+	}
+	if content := readFile(t, versionsFs, "dir/sub/file"); content != "current" {
+		t.Fatalf("the version is now %q", content)
+	}
+}
+
+// A version from another type of versioner is listed, so it has to work too
+func TestTrashcanRestoresATaggedVersion(t *testing.T) {
+	versioner, folderFs, versionsFs := trashcanForRestoring(t)
+	writeFile(t, folderFs, "file.txt", "current")
+	stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
+	writeFile(t, versionsFs, TagFilename("file.txt", stamp.Format(TimeFormat)), "tagged")
+
+	if err := versioner.Restore("file.txt", stamp); err != nil {
+		t.Fatal(err)
+	}
+	if content := readFile(t, folderFs, "file.txt"); content != "tagged" {
+		t.Fatalf("the file is now %q", content)
+	}
+	if content := readFile(t, versionsFs, "file.txt"); content != "current" {
+		t.Fatalf("the version is now %q", content)
+	}
+}
+
+// What a restore puts in the trash can has only just been archived, however old
+// the file is. Other devices have taken the restored file, so this may be the
+// last copy of it.
+func TestTrashcanCleanKeepsWhatARestoreDisplaced(t *testing.T) {
+	versioner, folderFs, versionsFs := trashcanForRestoring(t)
+	writeFile(t, folderFs, "file", "old")
+	if err := versioner.Archive("file"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, folderFs, "file", "current")
+	longAgo := time.Now().Add(-60 * 24 * time.Hour)
+	if err := folderFs.Chtimes("file", longAgo, longAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	versions, err := versioner.GetVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := versioner.Restore("file", versions["file"][0].VersionTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := versioner.Clean(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if content := readFile(t, versionsFs, "file"); content != "current" {
+		t.Fatalf("the version is now %q", content)
+	}
+}
+
+// A version from another type of versioner has the time of the file, which
+// says nothing about when it was archived
+func TestTrashcanCleanGoesByTheTagOfAVersion(t *testing.T) {
+	versioner, _, versionsFs := trashcanForRestoring(t)
+	longAgo := time.Now().Add(-60 * 24 * time.Hour)
+	recent := TagFilename("recent.txt", time.Now().Format(TimeFormat))
+	expired := TagFilename("expired.txt", longAgo.Format(TimeFormat))
+	for _, name := range []string{recent, expired} {
+		writeFile(t, versionsFs, name, "content")
+		if err := versionsFs.Chtimes(name, longAgo, longAgo); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := versioner.Clean(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := versionsFs.Lstat(recent); err != nil {
+		t.Errorf("a version archived just now is gone: %v", err)
+	}
+	if _, err := versionsFs.Lstat(expired); !fs.IsNotExist(err) {
+		t.Errorf("an old version is still there: %v", err)
+	}
+}
+
+// A number of days that doesn't fit a duration would wrap around and remove
+// every version
+func TestCleanoutDaysThatDoNotFitKeepVersions(t *testing.T) {
+	for value, want := range map[string]int{
+		"": 0, "none": 0, "7": 7, "106751": 106751, "106752": 0, "999999": 0,
+	} {
+		if got := parseCleanoutDays(value); got != want {
+			t.Errorf("%q: got %d, want %d", value, got, want)
+		}
+	}
+}
+
+func TestRestoreOfAVersionThatIsGoneKeepsTheFile(t *testing.T) {
+	cfg := config.FolderConfiguration{
+		FilesystemType: config.FilesystemTypeBasic,
+		Path:           t.TempDir(),
+		Versioning: config.VersioningConfiguration{
+			FSType: config.FilesystemTypeBasic,
+			Params: map[string]string{"keep": "5"},
+		},
+	}
+	versioner := newSimple(cfg)
+	folderFs := cfg.Filesystem()
+	writeFile(t, folderFs, "file", "current")
+
+	if err := versioner.Restore("file", time.Now().Add(-time.Hour)); !errors.Is(err, errNotFound) {
+		t.Fatalf("got %v", err)
+	}
+	if content := readFile(t, folderFs, "file"); content != "current" {
+		t.Fatalf("the file is now %q", content)
+	}
+}
+
+func TestPlatformHistoryPaths(t *testing.T) {
+	for name, want := range map[string]bool{
+		".stversions/platform/887fd559.json.gz":      true,
+		".stversions/platform/887fd559.pending.json": true,
+		"platform/887fd559.json.gz":                  false,
+		"docs/.stversions/platform/a.json.gz":        false,
+		".stversions/platform/deeper/a.json.gz":      false,
+		".stversions/platform/notes.txt":             false,
+		"file.txt":                                   false,
+	} {
+		if got := IsPlatformHistoryPath(filepath.FromSlash(name)); got != want {
+			t.Errorf("%s: got %v", name, got)
+		}
+	}
 }
