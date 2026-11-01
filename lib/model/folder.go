@@ -286,9 +286,9 @@ func (f *folder) reconcileBlockIndex(ctx context.Context) error {
 
 func (*folder) BringToFront(string) {}
 
-func (*folder) Override() {}
+func (*folder) Override() error { return nil }
 
-func (*folder) Revert() {}
+func (*folder) Revert() error { return nil }
 
 func (f *folder) DelayScan(next time.Duration) {
 	select {

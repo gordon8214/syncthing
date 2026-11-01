@@ -36,8 +36,8 @@ func newReceiveEncryptedFolder(model *model, ignores *ignore.Matcher, cfg config
 	return f
 }
 
-func (f *receiveEncryptedFolder) Revert() {
-	f.doInSync(f.revert)
+func (f *receiveEncryptedFolder) Revert() error {
+	return f.doInSync(f.revert)
 }
 
 func (f *receiveEncryptedFolder) revert(ctx context.Context) error {

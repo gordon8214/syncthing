@@ -53,8 +53,8 @@ import (
 type service interface {
 	suture.Service
 	BringToFront(string)
-	Override()
-	Revert()
+	Override() error
+	Revert() error
 	DelayScan(d time.Duration)
 	ScheduleScan()
 	SchedulePull()                                    // something relevant changed, we should try a pull
@@ -2692,33 +2692,45 @@ func (m *model) WatchError(folder string) error {
 }
 
 func (m *model) Override(folder string) {
-	// Grab the runner and the file set.
+	_ = m.OverrideFolder(folder)
+}
 
-	m.mut.RLock()
-	runner, ok := m.folderRunners.Get(folder)
-	m.mut.RUnlock()
-	if !ok {
-		return
+// OverrideFolder does what Override does, and says why not when it can't.
+func (m *model) OverrideFolder(folder string) error {
+	runner, err := m.runningFolder(folder)
+	if err != nil {
+		return err
 	}
 
 	// Run the override, taking updates as if they came from scanning.
 
-	runner.Override()
+	return runner.Override()
 }
 
 func (m *model) Revert(folder string) {
-	// Grab the runner and the file set.
+	_ = m.RevertFolder(folder)
+}
 
-	m.mut.RLock()
-	runner, ok := m.folderRunners.Get(folder)
-	m.mut.RUnlock()
-	if !ok {
-		return
+// RevertFolder does what Revert does, and says why not when it can't.
+func (m *model) RevertFolder(folder string) error {
+	runner, err := m.runningFolder(folder)
+	if err != nil {
+		return err
 	}
 
 	// Run the revert, taking updates as if they came from scanning.
 
-	runner.Revert()
+	return runner.Revert()
+}
+
+func (m *model) runningFolder(folder string) (service, error) {
+	m.mut.RLock()
+	defer m.mut.RUnlock()
+	if err := m.checkFolderRunningRLocked(folder); err != nil {
+		return nil, err
+	}
+	runner, _ := m.folderRunners.Get(folder)
+	return runner, nil
 }
 
 type TreeEntry struct {

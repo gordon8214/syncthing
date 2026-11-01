@@ -7,6 +7,7 @@
 package syncthing
 
 import (
+	"errors"
 	"time"
 
 	"github.com/syncthing/syncthing/internal/db"
@@ -25,18 +26,32 @@ func (m *Internals) FolderErrors(folderID string) ([]FileError, error) {
 	return m.model.FolderErrors(folderID)
 }
 
-// Override makes the state of a send-only folder the global one. It does
-// nothing for another type of folder, or one that isn't running, and returns
-// when it is done.
-func (m *Internals) Override(folderID string) {
-	m.model.Override(folderID)
+type checkedModel interface {
+	OverrideFolder(folder string) error
+	RevertFolder(folder string) error
+}
+
+var errNoCheckedOperations = errors.New("model does not report on revert and override")
+
+// Override makes the state of a send-only folder the global one, and returns
+// when it is done. It does nothing for another type of folder.
+func (m *Internals) Override(folderID string) error {
+	c, ok := m.model.(checkedModel)
+	if !ok {
+		return errNoCheckedOperations
+	}
+	return c.OverrideFolder(folderID)
 }
 
 // Revert removes what changed locally in a receive-only or receive-encrypted
-// folder. It does nothing for another type of folder, or one that isn't
-// running, and returns when it is done.
-func (m *Internals) Revert(folderID string) {
-	m.model.Revert(folderID)
+// folder, and returns when it is done. It does nothing for another type of
+// folder.
+func (m *Internals) Revert(folderID string) error {
+	c, ok := m.model.(checkedModel)
+	if !ok {
+		return errNoCheckedOperations
+	}
+	return c.RevertFolder(folderID)
 }
 
 // ReceiveOnlySize counts what changed locally in a receive-only folder.

@@ -66,8 +66,8 @@ func newReceiveOnlyFolder(model *model, ignores *ignore.Matcher, cfg config.Fold
 	return &receiveOnlyFolder{sr}
 }
 
-func (f *receiveOnlyFolder) Revert() {
-	f.doInSync(f.revert)
+func (f *receiveOnlyFolder) Revert() error {
+	return f.doInSync(f.revert)
 }
 
 func (f *receiveOnlyFolder) revert(ctx context.Context) error {

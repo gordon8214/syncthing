@@ -91,8 +91,8 @@ func (f *sendOnlyFolder) pull(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (f *sendOnlyFolder) Override() {
-	f.doInSync(f.override)
+func (f *sendOnlyFolder) Override() error {
+	return f.doInSync(f.override)
 }
 
 func (f *sendOnlyFolder) override(ctx context.Context) error {

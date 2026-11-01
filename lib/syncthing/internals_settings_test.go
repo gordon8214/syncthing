@@ -18,9 +18,8 @@ import (
 	"github.com/syncthing/syncthing/lib/protocol"
 )
 
-// A folder that doesn't exist gets the model's errors, and the operations that
-// report none leave it at that. Applications rely on those to tell why nothing
-// happened.
+// A folder that doesn't exist gets the model's errors. Applications rely on
+// those to tell why nothing happened.
 func TestInternalsSettingsOnMissingFolder(t *testing.T) {
 	sdb, err := sqlite.Open(t.TempDir())
 	if err != nil {
@@ -43,8 +42,12 @@ func TestInternalsSettingsOnMissingFolder(t *testing.T) {
 	if counts, err := internals.ReceiveOnlySize("missing"); err != nil || counts != (Counts{}) {
 		t.Errorf("ReceiveOnlySize: got %v, %v", counts, err)
 	}
-	internals.Override("missing")
-	internals.Revert("missing")
+	if err := internals.Override("missing"); !errors.Is(err, model.ErrFolderMissing) {
+		t.Errorf("Override: got %v", err)
+	}
+	if err := internals.Revert("missing"); !errors.Is(err, model.ErrFolderMissing) {
+		t.Errorf("Revert: got %v", err)
+	}
 }
 
 func TestInternalsPendingDevices(t *testing.T) {
