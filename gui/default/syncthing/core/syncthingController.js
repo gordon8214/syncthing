@@ -129,6 +129,7 @@ angular.module('syncthing.core')
             cleanupIntervalS: 3600,
             simpleKeep: 5,
             staggeredMaxAge: 365,
+            preservePlatformData: false,
             externalCommand: "",
         };
 
@@ -2739,6 +2740,40 @@ angular.module('syncthing.core')
             return ['none', 'external'].indexOf($scope.currentFolder._guiVersioning.selector) === -1;
         };
 
+        // Platform history needs staggered versioning in the default
+        // directory. The versioner refuses to start with anything else.
+        $scope.platformHistoryAvailable = function () {
+            var folder = $scope.currentFolder;
+            if (!folder._guiVersioning || folder._guiVersioning.selector !== 'staggered') {
+                return false;
+            }
+            return !folder.versioning || !folder.versioning.fsPath;
+        };
+
+        $scope.keepsPlatformHistory = function () {
+            return $scope.platformHistoryAvailable() && $scope.currentFolder._guiVersioning.preservePlatformData;
+        };
+
+        // currentFolder.versioning stays as it was read until saving, so this
+        // is what the folder does now.
+        function hasPlatformHistory(folder) {
+            var versioning = folder.versioning;
+            return !!versioning && versioning.type === 'staggered' && !!versioning.params
+                && versioning.params.preservePlatformData === 'true';
+        }
+
+        $scope.losesPlatformHistory = function () {
+            var folder = $scope.currentFolder;
+            return $scope.editingFolderExisting() && hasPlatformHistory(folder) && !$scope.keepsPlatformHistory();
+        };
+
+        // With platform history the versioner refuses to restore a version
+        // that has none, which are all the versions the folder has so far.
+        $scope.startsPlatformHistory = function () {
+            var folder = $scope.currentFolder;
+            return $scope.editingFolderExisting() && !hasPlatformHistory(folder) && !!$scope.keepsPlatformHistory();
+        };
+
         function initVersioningEditing() {
             $scope.currentFolder._guiVersioning = angular.copy($scope.versioningDefaults);
 
@@ -2762,6 +2797,7 @@ angular.module('syncthing.core')
                 break;
             case "staggered":
                 $scope.currentFolder._guiVersioning.staggeredMaxAge = Math.floor(+currentVersioning.params.maxAge / 86400);
+                $scope.currentFolder._guiVersioning.preservePlatformData = currentVersioning.params.preservePlatformData === 'true';
                 break;
             case "external":
                 $scope.currentFolder._guiVersioning.externalCommand = currentVersioning.params.command;
@@ -2952,7 +2988,13 @@ angular.module('syncthing.core')
                 folderCfg.versioning.params.command = '' + folderCfg._guiVersioning.externalCommand;
                 break;
             default:
-                folderCfg.versioning = {type: ''};
+                // Without params, the folder gets those of the defaults.
+                folderCfg.versioning = {type: '', params: {}};
+            }
+            if ($scope.keepsPlatformHistory()) {
+                folderCfg.versioning.params.preservePlatformData = 'true';
+            } else {
+                delete folderCfg.versioning.params.preservePlatformData;
             }
             delete folderCfg._guiVersioning;
 
