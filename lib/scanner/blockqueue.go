@@ -9,14 +9,47 @@ package scanner
 import (
 	"context"
 	"errors"
+	"hash"
 	"sync"
+	"sync/atomic"
 
 	"github.com/syncthing/syncthing/lib/fs"
 	"github.com/syncthing/syncthing/lib/protocol"
 )
 
+var hasherHash atomic.Pointer[func(ctx context.Context) hash.Hash]
+
+// SetHasherHash lets an application that embeds the engine decide how hashing
+// files loads the computer, or undoes that when newHash is nil. Hashers started
+// after this call use it; HashFile and Blocks don't. Each hasher calls newHash
+// once, for a hash that it uses on one file at a time, and that gets the data
+// through ReadFrom if it has that method, a block at a time. The hash must
+// compute SHA-256: only where and when that happens may differ. Nothing closes
+// it, so it has to hold nothing that needs releasing.
+//
+// The hash runs on Go's threads and must leave them at their CPU priority. Go's
+// scheduler runs on all of them, and a starved thread that holds a P or a
+// runtime lock stalls every goroutine and every call into Go, so low priority
+// work has to happen outside Go altogether.
+//
+// The hash is given ctx, which the hasher's work ends with, so that a hash that
+// takes long can stop.
+func SetHasherHash(newHash func(ctx context.Context) hash.Hash) {
+	if newHash == nil {
+		hasherHash.Store(nil)
+		return
+	}
+	hasherHash.Store(&newHash)
+}
+
 // HashFile hashes the files and returns a list of blocks representing the file.
 func HashFile(ctx context.Context, folderID string, fs fs.Filesystem, path string, blockSize int, counter Counter) ([]protocol.BlockInfo, error) {
+	hf := hashPool.Get().(hash.Hash) //nolint:forcetypeassert
+	defer hashPool.Put(hf)
+	return hashFileWith(ctx, hf, folderID, fs, path, blockSize, counter)
+}
+
+func hashFileWith(ctx context.Context, hf hash.Hash, folderID string, fs fs.Filesystem, path string, blockSize int, counter Counter) ([]protocol.BlockInfo, error) {
 	fd, err := fs.Open(path)
 	if err != nil {
 		l.Debugln("open:", err)
@@ -36,7 +69,7 @@ func HashFile(ctx context.Context, folderID string, fs fs.Filesystem, path strin
 
 	// Hash the file. This may take a while for large files.
 
-	blocks, err := Blocks(ctx, fd, blockSize, size, counter)
+	blocks, err := blocksWith(ctx, hf, fd, blockSize, size, counter)
 	if err != nil {
 		l.Debugln("blocks:", err)
 		return nil, err
@@ -94,6 +127,14 @@ func newParallelHasher(ctx context.Context, folderID string, fs fs.Filesystem, w
 func (ph *parallelHasher) hashFiles(ctx context.Context) {
 	defer ph.wg.Done()
 
+	var hf hash.Hash
+	if newHash := hasherHash.Load(); newHash != nil {
+		hf = (*newHash)(ctx)
+	} else {
+		hf = hashPool.Get().(hash.Hash) //nolint:forcetypeassert
+		defer hashPool.Put(hf)
+	}
+
 	for {
 		select {
 		case f, ok := <-ph.inbox:
@@ -107,7 +148,7 @@ func (ph *parallelHasher) hashFiles(ctx context.Context) {
 				panic("Bug. Asked to hash a directory or a deleted file.")
 			}
 
-			blocks, err := HashFile(ctx, ph.folderID, ph.fs, f.Name, f.BlockSize(), ph.counter)
+			blocks, err := hashFileWith(ctx, hf, ph.folderID, ph.fs, f.Name, f.BlockSize(), ph.counter)
 			if err != nil {
 				handleError(ctx, "hashing", f.Name, err, ph.outbox)
 				continue

@@ -41,6 +41,13 @@ var hashPool = sync.Pool{
 
 // Blocks returns the blockwise hash of the reader.
 func Blocks(ctx context.Context, r io.Reader, blocksize int, sizehint int64, counter Counter) ([]protocol.BlockInfo, error) {
+	hf := hashPool.Get().(hash.Hash) //nolint:forcetypeassert
+	defer hashPool.Put(hf)
+	return blocksWith(ctx, hf, r, blocksize, sizehint, counter)
+}
+
+// blocksWith is Blocks with the caller's hash, which it leaves reset.
+func blocksWith(ctx context.Context, hf hash.Hash, r io.Reader, blocksize int, sizehint int64, counter Counter) ([]protocol.BlockInfo, error) {
 	if counter == nil {
 		counter = &noopCounter{}
 	}
@@ -61,13 +68,11 @@ func Blocks(ctx context.Context, r io.Reader, blocksize int, sizehint int64, cou
 		hashes = make([]byte, 0, hashLength*numBlocks)
 	}
 
-	hf := hashPool.Get().(hash.Hash) //nolint:forcetypeassert
 	// A 32k buffer is used for copying into the hash function.
 	buf := bufPool.Get().(*[bufSize]byte)[:] //nolint:forcetypeassert
 	defer func() {
 		bufPool.Put((*[bufSize]byte)(buf))
 		hf.Reset()
-		hashPool.Put(hf)
 	}()
 
 	var offset int64
