@@ -1468,6 +1468,48 @@ func startWrapper(wrapper Wrapper) *testWrapper {
 	return tw
 }
 
+func TestVersioningParamsFromJSON(t *testing.T) {
+	// Every folder is decoded over the default folder. Params it states are
+	// all its params, and only a folder without any takes the defaults'.
+	// The "none" folder is what the GUI saves for no versioning.
+	in := `{
+		"defaults": {"folder": {"versioning": {"type": "staggered",
+			"params": {"maxAge": "86400", "preservePlatformData": "true"}}}},
+		"folders": [
+			{"id": "own", "path": "/own", "versioning": {"type": "simple", "params": {"keep": "5"}}},
+			{"id": "none", "path": "/none", "versioning": {"type": "", "params": {}}},
+			{"id": "omitted", "path": "/omitted", "versioning": {"type": "staggered"}},
+			{"id": "null", "path": "/null", "versioning": {"type": "staggered", "params": null}},
+			{"id": "inherited", "path": "/inherited"}
+		]
+	}`
+	cfg, err := ReadJSON(strings.NewReader(in), device1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaults := map[string]string{"maxAge": "86400", "preservePlatformData": "true"}
+	expected := map[string]map[string]string{
+		"own":       {"keep": "5"},
+		"none":      {},
+		"omitted":   defaults,
+		"null":      defaults,
+		"inherited": defaults,
+	}
+	for id, params := range expected {
+		folder, _, ok := cfg.Folder(id)
+		if !ok {
+			t.Fatalf("no folder %q", id)
+		}
+		if !reflect.DeepEqual(folder.Versioning.Params, params) {
+			t.Errorf("folder %q has params %v, expected %v", id, folder.Versioning.Params, params)
+		}
+	}
+	if !reflect.DeepEqual(cfg.Defaults.Folder.Versioning.Params, defaults) {
+		t.Errorf("default folder has params %v, expected %v", cfg.Defaults.Folder.Versioning.Params, defaults)
+	}
+}
+
 func TestInternalVersioningConfiguration(t *testing.T) {
 	// Verify that the versioning configuration XML serializes to something
 	// reasonable.

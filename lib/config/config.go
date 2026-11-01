@@ -212,7 +212,7 @@ func ReadJSON(r io.Reader, myID protocol.DeviceID) (Configuration, error) {
 	cfg.Folders = make([]FolderConfiguration, len(rawFoldersDevices.Folders))
 	for i, bs := range rawFoldersDevices.Folders {
 		cfg.Folders[i] = cfg.Defaults.Folder.Copy()
-		if err := json.Unmarshal(bs, &cfg.Folders[i]); err != nil {
+		if err := cfg.Folders[i].UnmarshalOverDefaults(bs); err != nil {
 			return Configuration{}, err
 		}
 	}

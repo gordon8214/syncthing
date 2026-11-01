@@ -9,6 +9,7 @@ package config
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -119,6 +120,23 @@ func (f FolderConfiguration) Copy() FolderConfiguration {
 	copy(c.Devices, f.Devices)
 	c.Versioning = f.Versioning.Copy()
 	return c
+}
+
+// UnmarshalOverDefaults decodes a whole folder over f, which holds the defaults
+// for what data leaves out. Versioning params in data are all the folder's
+// params, as they go with its type: decoding into the map would add those of
+// the defaults, which may not fit that type. A folder with no params, or null,
+// takes the defaults'. Use plain json.Unmarshal to patch a folder instead.
+func (f *FolderConfiguration) UnmarshalOverDefaults(data []byte) error {
+	defaults := f.Versioning.Params
+	f.Versioning.Params = nil
+	if err := json.Unmarshal(data, f); err != nil {
+		return err
+	}
+	if f.Versioning.Params == nil {
+		f.Versioning.Params = defaults
+	}
+	return nil
 }
 
 // Filesystem creates a filesystem for the path and options of this folder.

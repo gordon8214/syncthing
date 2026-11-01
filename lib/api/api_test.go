@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1905,6 +1906,60 @@ func TestConfigChanges(t *testing.T) {
 	}
 	if opts.MaxSendKbps != 50 {
 		t.Error("Expected 50 for MaxSendKbps, got", opts.MaxSendKbps)
+	}
+}
+
+func TestConfigFolderVersioningParams(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.New(protocol.LocalDeviceID)
+	cfg.GUI.RawAddress = "127.0.0.1:0"
+	cfg.GUI.APIKey = testAPIKey
+	defaults := map[string]string{"maxAge": "86400", "preservePlatformData": "true"}
+	cfg.Defaults.Folder.Versioning = config.VersioningConfiguration{Type: "staggered", Params: defaults}
+	// These requests save the configuration, so it needs a file.
+	w := config.Wrap(filepath.Join(t.TempDir(), "config.xml"), cfg, protocol.LocalDeviceID, events.NoopLogger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Serve(ctx)
+	baseURL := startHTTP(t, w)
+
+	const own = `{"id": "%[1]s", "path": "%[1]s", "versioning": {"type": "simple", "params": {"keep": "5"}}}`
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		folder string
+		params map[string]string
+	}{
+		// A whole folder has the params it states, not the defaults' too.
+		{"post", http.MethodPost, "/rest/config/folders", fmt.Sprintf(own, "post"), "post", map[string]string{"keep": "5"}},
+		{"put", http.MethodPut, "/rest/config/folders/put", fmt.Sprintf(own, "put"), "put", map[string]string{"keep": "5"}},
+		{"put list", http.MethodPut, "/rest/config/folders", "[" + fmt.Sprintf(own, "list") + "]", "list", map[string]string{"keep": "5"}},
+		{"inherited", http.MethodPost, "/rest/config/folders", `{"id": "inherited", "path": "inherited"}`, "inherited", defaults},
+		// A patch adds to the params the folder has.
+		{"patch", http.MethodPatch, "/rest/config/folders/inherited", `{"versioning": {"params": {"maxAge": "0"}}}`, "inherited",
+			map[string]string{"maxAge": "0", "preservePlatformData": "true"}},
+	}
+	for _, tc := range tests {
+		req, _ := http.NewRequest(tc.method, baseURL+tc.path, strings.NewReader(tc.body))
+		req.Header.Set("X-API-Key", testAPIKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(tc.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: got status %v", tc.name, resp.StatusCode)
+		}
+		folder, ok := w.Folder(tc.folder)
+		if !ok {
+			t.Fatalf("%s: no folder %q", tc.name, tc.folder)
+		}
+		if !maps.Equal(folder.Versioning.Params, tc.params) {
+			t.Errorf("%s: got params %v, expected %v", tc.name, folder.Versioning.Params, tc.params)
+		}
 	}
 }
 

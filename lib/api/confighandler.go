@@ -74,7 +74,7 @@ func (c *configMuxBuilder) registerFolders(path string) {
 		defaultFolder := c.cfg.DefaultFolder()
 		for i, bs := range data {
 			folders[i] = defaultFolder.Copy()
-			if err := json.Unmarshal(bs, &folders[i]); err != nil {
+			if err := folders[i].UnmarshalOverDefaults(bs); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -90,7 +90,7 @@ func (c *configMuxBuilder) registerFolders(path string) {
 	})
 
 	c.HandlerFunc(http.MethodPost, path, func(w http.ResponseWriter, r *http.Request) {
-		c.adjustFolder(w, r, c.cfg.DefaultFolder(), false)
+		c.putFolder(w, r)
 	})
 }
 
@@ -140,7 +140,7 @@ func (c *configMuxBuilder) registerFolder(path string) {
 	})
 
 	c.Handle(http.MethodPut, path, func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
-		c.adjustFolder(w, r, c.cfg.DefaultFolder(), false)
+		c.putFolder(w, r)
 	})
 
 	c.Handle(http.MethodPatch, path, func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
@@ -342,6 +342,25 @@ func (c *configMuxBuilder) adjustFolder(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	c.setFolder(w, folder, defaults)
+}
+
+// putFolder is adjustFolder for a whole folder over the defaults.
+func (c *configMuxBuilder) putFolder(w http.ResponseWriter, r *http.Request) {
+	bs, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	folder := c.cfg.DefaultFolder()
+	if err == nil {
+		err = folder.UnmarshalOverDefaults(bs)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	c.setFolder(w, folder, false)
+}
+
+func (c *configMuxBuilder) setFolder(w http.ResponseWriter, folder config.FolderConfiguration, defaults bool) {
 	waiter, err := c.cfg.Modify(func(cfg *config.Configuration) {
 		if defaults {
 			cfg.Defaults.Folder = folder
