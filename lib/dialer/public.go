@@ -8,6 +8,7 @@ package dialer
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -27,6 +28,10 @@ func SetTCPOptions(conn net.Conn) error {
 	switch conn := conn.(type) {
 	case dialerConn:
 		return SetTCPOptions(conn.Conn)
+	case *bufferedConn:
+		return SetTCPOptions(conn.Conn)
+	case *tls.Conn:
+		return SetTCPOptions(conn.NetConn())
 	case *net.TCPConn:
 		var err error
 		if err = conn.SetLinger(0); err != nil {
@@ -51,6 +56,10 @@ func SetTrafficClass(conn net.Conn, class int) error {
 	switch conn := conn.(type) {
 	case dialerConn:
 		return SetTrafficClass(conn.Conn, class)
+	case *bufferedConn:
+		return SetTrafficClass(conn.Conn, class)
+	case *tls.Conn:
+		return SetTrafficClass(conn.NetConn(), class)
 	case *net.TCPConn:
 		e1 := ipv4.NewConn(conn).SetTOS(class)
 		e2 := ipv6.NewConn(conn).SetTrafficClass(class)
@@ -65,7 +74,7 @@ func SetTrafficClass(conn net.Conn, class int) error {
 }
 
 func dialContextWithFallback(ctx context.Context, fallback proxy.ContextDialer, network, addr string) (net.Conn, error) {
-	dialer, ok := proxy.FromEnvironment().(proxy.ContextDialer)
+	dialer, ok := proxyFor(network, addr).(proxy.ContextDialer)
 	if !ok {
 		return nil, errUnexpectedInterfaceType
 	}
@@ -74,7 +83,7 @@ func dialContextWithFallback(ctx context.Context, fallback proxy.ContextDialer, 
 		l.Debugf("Dialing direct result %s %s: %v %v", network, addr, conn, err)
 		return conn, err
 	}
-	if noFallback {
+	if !fallbackAllowed() {
 		conn, err := dialer.DialContext(ctx, network, addr)
 		l.Debugf("Dialing no fallback result %s %s: %v %v", network, addr, conn, err)
 		if err != nil {
@@ -107,7 +116,7 @@ func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 func DialContextReusePortFunc(registry *registry.Registry) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// If proxy is configured, there is no point trying to reuse listen addresses.
-		if proxy.FromEnvironment() != proxy.Direct {
+		if proxyFor(network, addr) != proxy.Direct {
 			return DialContext(ctx, network, addr)
 		}
 

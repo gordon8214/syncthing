@@ -11,6 +11,7 @@ package connections
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/connections/registry"
+	"github.com/syncthing/syncthing/lib/dialer"
 	"github.com/syncthing/syncthing/lib/protocol"
 )
 
@@ -28,6 +30,8 @@ const (
 	// streams.
 	quicOperationTimeout = 10 * time.Second
 )
+
+var errQUICProxied = errors.New("QUIC can't go through the proxy")
 
 func init() {
 	factory := &quicDialerFactory{}
@@ -43,6 +47,10 @@ type quicDialer struct {
 }
 
 func (d *quicDialer) Dial(ctx context.Context, _ protocol.DeviceID, uri *url.URL) (internalConn, error) {
+	if dialer.Proxied(uri.Hostname()) {
+		return internalConn{}, errQUICProxied
+	}
+
 	uri = fixupPort(uri, config.DefaultQUICPort)
 
 	network := quicNetwork(uri)

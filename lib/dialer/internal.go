@@ -132,6 +132,10 @@ func (h *httpProxyDialer) DialContext(ctx context.Context, network, addr string)
 		conn = tlsConn
 	}
 
+	// Writing the request and reading the response don't stop for ctx by themselves
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
 	req := &http.Request{
 		Method: http.MethodConnect,
 		URL:    &url.URL{Host: addr},
@@ -145,7 +149,7 @@ func (h *httpProxyDialer) DialContext(ctx context.Context, network, addr string)
 			warnCleartextProxyAuthOnce.Do(func() {
 				slog.WarnContext(ctx,
 					"Using basic auth over cleartext HTTP proxy",
-					"proxy", h.proxyURL.Redacted(),
+					"proxy", h.proxyURL.Host,
 				)
 			})
 		}

@@ -34,6 +34,7 @@ import (
 	"github.com/syncthing/syncthing/lib/build"
 	"github.com/syncthing/syncthing/lib/config"
 	"github.com/syncthing/syncthing/lib/connections/registry"
+	"github.com/syncthing/syncthing/lib/dialer"
 	"github.com/syncthing/syncthing/lib/discover"
 	"github.com/syncthing/syncthing/lib/events"
 	"github.com/syncthing/syncthing/lib/nat"
@@ -730,6 +731,15 @@ type lanChecker struct {
 }
 
 func (s *lanChecker) isLANHost(host string) bool {
+	// What goes through a proxy isn't local, and resolving it here would tell the local resolver
+	hostname := host
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		hostname = name
+	}
+	if dialer.Proxied(hostname) {
+		return false
+	}
+
 	// Probably we are called with an ip:port combo which we can resolve as
 	// a TCP address.
 	if addr, err := net.ResolveTCPAddr("tcp", host); err == nil {
@@ -948,6 +958,18 @@ func (s *service) AllAddresses() []string {
 }
 
 func (s *service) ExternalAddresses() []string {
+	addrs := s.announceableAddresses()
+	if dialer.ProxySet() {
+		// A proxy hides where we are from what we connect to, which announcing a port mapping or a LAN address would
+		// tell them anyway. Relays are the way to reach us that goes through the proxy.
+		addrs = slices.DeleteFunc(addrs, func(addr string) bool {
+			return !strings.HasPrefix(addr, "relay://")
+		})
+	}
+	return addrs
+}
+
+func (s *service) announceableAddresses() []string {
 	if s.cfg.Options().AnnounceLANAddresses {
 		return s.AllAddresses()
 	}

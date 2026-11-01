@@ -40,8 +40,7 @@ func (d *relayDialer) Dial(ctx context.Context, id protocol.DeviceID, uri *url.U
 
 	err = dialer.SetTCPOptions(conn)
 	if err != nil {
-		conn.Close()
-		return internalConn{}, err
+		l.Debugln("Dial (BEP/relay): setting tcp options:", err)
 	}
 
 	err = dialer.SetTrafficClass(conn, d.trafficClass)

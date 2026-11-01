@@ -17,6 +17,7 @@ import (
 	"github.com/ccding/go-stun/stun"
 
 	"github.com/syncthing/syncthing/lib/config"
+	"github.com/syncthing/syncthing/lib/dialer"
 	"github.com/syncthing/syncthing/lib/svcutil"
 )
 
@@ -99,7 +100,8 @@ func (s *Service) Serve(ctx context.Context) error {
 		case <-timer.C:
 		}
 
-		if s.cfg.Options().IsStunDisabled() {
+		// What it finds would only be for others to reach us without the proxy, and it can't go through one
+		if s.cfg.Options().IsStunDisabled() || dialer.ProxySet() {
 			timer.Reset(time.Second)
 			continue
 		}

@@ -27,6 +27,10 @@ func (e *incorrectResponseCodeErr) Error() string {
 	return fmt.Sprintf("incorrect response code %d: %s", e.code, e.msg)
 }
 
+// errNoSessionAddress is for a relay that leaves its address to the client, which only knows it from the connection.
+// Through a proxy, a relay addressed by name has no IP there.
+var errNoSessionAddress = errors.New("the relay gave no address for the session")
+
 func GetInvitationFromRelay(ctx context.Context, uri *url.URL, id syncthingprotocol.DeviceID, certs []tls.Certificate, timeout time.Duration) (protocol.SessionInvitation, error) {
 	if uri.Scheme != "relay" {
 		return protocol.SessionInvitation{}, fmt.Errorf("unsupported relay scheme: %v", uri.Scheme)
@@ -77,6 +81,9 @@ func GetInvitationFromRelay(ctx context.Context, uri *url.URL, id syncthingproto
 }
 
 func JoinSession(ctx context.Context, invitation protocol.SessionInvitation) (net.Conn, error) {
+	if len(invitation.Address) == 0 {
+		return nil, errNoSessionAddress
+	}
 	addr := net.JoinHostPort(net.IP(invitation.Address).String(), strconv.Itoa(int(invitation.Port)))
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
