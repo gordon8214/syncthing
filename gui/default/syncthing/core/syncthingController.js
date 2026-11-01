@@ -13,6 +13,7 @@ angular.module('syncthing.core')
         var restarting = false;
         var restartExpectedFrom = 0;
         var restartExpectedUntil = 0;
+        var advancedDevicePauses = {};
 
         function initController() {
             LocaleService.autoConfigLocale();
@@ -1916,6 +1917,14 @@ angular.module('syncthing.core')
         };
 
         $scope.saveAdvanced = function () {
+            // A device's pause from elsewhere since the dialog opened stays,
+            // unless it was changed here
+            $scope.advancedConfig.devices.forEach(function (device) {
+                var current = $scope.devices[device.deviceID];
+                if (current && device.paused === advancedDevicePauses[device.deviceID]) {
+                    device.paused = current.paused;
+                }
+            });
             $scope.config = $scope.advancedConfig;
             $scope.saveConfig().then(function () {
                 hideModal('#advanced');
@@ -2130,6 +2139,11 @@ angular.module('syncthing.core')
 
         function setDeviceConfig() {
             var currentID = $scope.currentDevice.deviceID;
+            // The dialog has no pause control, so a pause or resume from
+            // elsewhere since it opened stays
+            if ($scope.devices[currentID]) {
+                $scope.currentDevice.paused = $scope.devices[currentID].paused;
+            }
             $scope.devices[currentID] = $scope.currentDevice;
             $scope.config.devices = deviceList($scope.devices);
 
@@ -3605,6 +3619,10 @@ angular.module('syncthing.core')
         $scope.advanced = function () {
             $scope.advancedConfig = angular.copy($scope.config);
             $scope.advancedConfig.devices.sort(deviceCompare);
+            advancedDevicePauses = {};
+            $scope.advancedConfig.devices.forEach(function (device) {
+                advancedDevicePauses[device.deviceID] = device.paused;
+            });
             $scope.advancedConfig.folders.sort(folderCompare);
             $scope.advancedConfig.defaults.ignores._lines = function (newValue) {
                 if (arguments.length) {
