@@ -260,6 +260,31 @@ func TestCloseTimeout(t *testing.T) {
 	}
 }
 
+// TestCloseBeforeStart checks that calling Close on a connection that was
+// never started doesn't wait to send the close message, as nothing would.
+func TestCloseBeforeStart(t *testing.T) {
+	m := newTestModel()
+
+	rw := testutil.NewBlockingRW()
+	c := getRawConnection(NewConnection(c0ID, rw, rw, testutil.NoopCloser{}, m, new(mockedConnectionInfo), CompressionAlways, testKeyGen))
+	defer closeAndWait(c, rw)
+
+	done := make(chan struct{})
+	go func() {
+		c.Close(errManual)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(CloseTimeout / 2):
+		t.Fatal("timed out before Close returned")
+	}
+	if err := m.closedError(); err != errManual {
+		t.Fatalf("closed with %v, want %v", err, errManual)
+	}
+}
+
 func TestUnmarshalFDPUv16v17(t *testing.T) {
 	var fdpu bep.FileDownloadProgressUpdate
 

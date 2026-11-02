@@ -970,6 +970,16 @@ func (c *rawConnection) shouldCompressMessage(msg proto.Message) bool {
 // argument specifies the reason for closing the connection.
 func (c *rawConnection) Close(err error) {
 	c.sendCloseOnce.Do(func() {
+		// Only writerLoop sends the message, and it doesn't run until the
+		// connection is started. The model does that a moment after adding a
+		// connection, and not at all once it is stopping, so waiting for it
+		// could hold up stopping by the whole of CloseTimeout.
+		select {
+		case <-c.started:
+		default:
+			return
+		}
+
 		done := make(chan struct{})
 		timeout := time.NewTimer(CloseTimeout)
 		select {
