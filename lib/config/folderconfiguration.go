@@ -119,6 +119,7 @@ func (f FolderConfiguration) Copy() FolderConfiguration {
 	c.Devices = make([]FolderDeviceConfiguration, len(f.Devices))
 	copy(c.Devices, f.Devices)
 	c.Versioning = f.Versioning.Copy()
+	c.XattrFilter.Entries = slices.Clone(f.XattrFilter.Entries)
 	return c
 }
 
