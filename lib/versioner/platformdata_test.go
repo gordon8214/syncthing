@@ -196,12 +196,16 @@ func TestPlatformHistoryCopyPreservesExecutable(t *testing.T) {
 	if err := v.ArchiveWithPlatformData("exec", historyPD(1), true); err != nil {
 		t.Fatal(err)
 	}
+	originalMode, err := v.folderFs.Stat("exec")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ver := onlyVersion(t, v, "exec")
 	if err := v.RestoreWithPlatformData("exec", ver.VersionTime, historyPD(2)); err != nil {
 		t.Fatal(err)
 	}
 	info, err := v.folderFs.Stat("exec")
-	if err != nil || info.Mode()&0o777 != 0o755 {
+	if err != nil || info.Mode()&0o777 != originalMode.Mode()&0o777 {
 		t.Fatalf("executable mode lost %v %v", info, err)
 	}
 }
@@ -284,6 +288,10 @@ func TestPlatformHistoryReadOnlyFile(t *testing.T) {
 		if err := v.folderFs.Chmod("object", 0o400); err != nil {
 			t.Fatal(err)
 		}
+		originalMode, err := v.folderFs.Stat("object")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := v.ArchiveWithPlatformData("object", historyPD(1), copyOnly); err != nil {
 			t.Fatalf("archiving (copy %v): %v", copyOnly, err)
 		}
@@ -292,8 +300,31 @@ func TestPlatformHistoryReadOnlyFile(t *testing.T) {
 			t.Fatalf("restoring (copy %v): %v", copyOnly, err)
 		}
 		info, err := v.folderFs.Stat("object")
-		if err != nil || info.Mode()&0o777 != 0o400 {
+		if err != nil || info.Mode()&0o777 != originalMode.Mode()&0o777 {
 			t.Fatalf("read-only mode lost (copy %v): %v %v", copyOnly, info, err)
 		}
+	}
+}
+
+func TestPlatformHistoryReferencePreservesTime(t *testing.T) {
+	v := historyVersioner(t)
+	writeHistoryFile(t, v, "file", "unchanged")
+	original := time.Unix(1234567890, 0)
+	if err := v.folderFs.Chtimes("file", original, original); err != nil {
+		t.Fatal(err)
+	}
+	ref := platformRef{ID: strings.Repeat("a", 32)}
+	if err := writePlatformRef(v.folderFs, "file", ref); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := readPlatformRef(v.folderFs, "file"); err != nil || !ok || got != ref {
+		t.Fatalf("reference: %+v %v %v", got, ok, err)
+	}
+	if err := fs.WithOwnerWrite(v.folderFs, "file", func() error { return removePlatformRefData(v.folderFs, "file") }); err != nil {
+		t.Fatal(err)
+	}
+	info, err := v.folderFs.Stat("file")
+	if err != nil || !info.ModTime().Equal(original) {
+		t.Fatalf("reference changed modification time: %v %v", info, err)
 	}
 }

@@ -65,25 +65,20 @@ type platformRef struct {
 	ID      string `json:"id"`
 	Restore bool   `json:"restore,omitempty"`
 }
-type platformRefFilter struct{}
-
-func (platformRefFilter) Permit(name string) bool    { return name == platformRefName }
-func (platformRefFilter) GetMaxSingleEntrySize() int { return 0 }
-func (platformRefFilter) GetMaxTotalSize() int       { return 0 }
 
 func readPlatformRef(fsys fs.Filesystem, name string) (platformRef, bool, error) {
-	attrs, err := fsys.GetXattr(name, platformRefFilter{})
+	data, err := readPlatformRefData(fsys, name)
 	if fs.IsNotExist(err) {
 		return platformRef{}, false, nil
 	}
 	if err != nil {
 		return platformRef{}, false, err
 	}
-	if len(attrs) == 0 {
+	if len(data) == 0 {
 		return platformRef{}, false, nil
 	}
 	var ref platformRef
-	if err := json.Unmarshal(attrs[0].Value, &ref); err != nil {
+	if err := json.Unmarshal(data, &ref); err != nil {
 		return ref, false, err
 	}
 	id, err := hex.DecodeString(ref.ID)
@@ -97,17 +92,13 @@ func writePlatformRef(fsys fs.Filesystem, name string, ref platformRef) error {
 	if err != nil {
 		return err
 	}
-	// Versions keep their file's permissions, which may be read-only
+	// Versions keep their file's permissions, which may be read-only.
 	if err := fs.WithOwnerWrite(fsys, name, func() error {
-		return fsys.SetXattr(name, []protocol.Xattr{{Name: platformRefName, Value: data}}, platformRefFilter{})
+		return writePlatformRefData(fsys, name, data)
 	}); err != nil {
 		return err
 	}
-	file, err := fsys.Open(name)
-	if err != nil {
-		return err
-	}
-	return errors.Join(file.Sync(), file.Close())
+	return syncPlatformFile(fsys, name)
 }
 func platformBlob(ref platformRef) string { return filepath.Join(platformRoot, ref.ID+".json.gz") }
 
@@ -236,7 +227,7 @@ func (v *staggered) archivePlatformData(path string, pd protocol.PlatformData, c
 		stamp = stamp.Add(time.Second)
 	}
 	if err = v.folderFs.Rename(source, filepath.Join(DefaultPath, dest)); err != nil {
-		_ = fs.WithOwnerWrite(v.folderFs, source, func() error { return v.folderFs.SetXattr(source, nil, platformRefFilter{}) })
+		_ = fs.WithOwnerWrite(v.folderFs, source, func() error { return removePlatformRefData(v.folderFs, source) })
 		return "", err
 	}
 	published = true
@@ -321,7 +312,7 @@ func (v *staggered) RestoreWithPlatformData(path string, stamp time.Time, curren
 	} else if !fs.IsNotExist(err) {
 		return err
 	}
-	if err = v.folderFs.Rename(filepath.Join(DefaultPath, source), path); err != nil {
+	if err = platformRestoreRename(v.folderFs, filepath.Join(DefaultPath, source), path); err != nil {
 		return err
 	}
 	restored = true
@@ -365,7 +356,10 @@ func (v *staggered) CommitRestoredPlatformData(path string, pd protocol.Platform
 	if !reflect.DeepEqual(v.filterRestoredPlatformData(saved), pd) {
 		return errors.New("restored platform metadata not indexed")
 	}
-	if err = fs.WithOwnerWrite(v.folderFs, path, func() error { return v.folderFs.SetXattr(path, nil, platformRefFilter{}) }); err != nil {
+	if err = fs.WithOwnerWrite(v.folderFs, path, func() error { return removePlatformRefData(v.folderFs, path) }); err != nil {
+		return err
+	}
+	if err := syncPlatformFile(v.folderFs, path); err != nil {
 		return err
 	}
 	return errors.Join(v.versionsFs.Remove(platformBlob(ref)), v.versionsFs.Remove(platformPending(ref)))
@@ -477,12 +471,4 @@ func (v *staggered) reconcilePlatformData(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func syncPlatformDir(fsys fs.Filesystem, path string) error {
-	file, err := fsys.Open(path)
-	if err != nil {
-		return err
-	}
-	return errors.Join(file.Sync(), file.Close())
 }
