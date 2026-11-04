@@ -56,6 +56,22 @@ func New(cfg config.FolderConfiguration) (Versioner, error) {
 	}, nil
 }
 
+// NewForRestore creates a private versioner for archiving the live file before
+// publishing a restored version. Staggered pruning is deferred so that it cannot
+// immediately discard the displaced live contents in favor of an older archive
+// in the same retention interval. Normal archives and scheduled Clean calls
+// continue to apply the configured retention policy.
+func NewForRestore(cfg config.FolderConfiguration) (Versioner, error) {
+	v, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if staggered, ok := v.(*versionerWithErrorContext).Versioner.(*staggered); ok {
+		staggered.skipArchiveCleanup = true
+	}
+	return v, nil
+}
+
 type versionerWithErrorContext struct {
 	Versioner
 

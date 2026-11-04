@@ -30,6 +30,7 @@ type interval struct {
 }
 
 type staggered struct {
+	skipArchiveCleanup   bool
 	preservePlatformData bool
 	platformXattrFilter  *config.XattrFilter
 	platformMut          sync.Mutex
@@ -147,7 +148,9 @@ func (v *staggered) Archive(filePath string) error {
 		return err
 	}
 
-	cleanVersions(v.versionsFs, findAllVersions(v.versionsFs, filePath), v.toRemove)
+	if !v.skipArchiveCleanup {
+		cleanVersions(v.versionsFs, findAllVersions(v.versionsFs, filePath), v.toRemove)
+	}
 
 	return nil
 }

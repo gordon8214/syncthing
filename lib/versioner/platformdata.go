@@ -243,7 +243,7 @@ func (v *staggered) archivePlatformData(path string, pd protocol.PlatformData, c
 func (v *staggered) ArchiveWithPlatformData(path string, pd protocol.PlatformData, copyOnly bool) error {
 	v.platformMut.Lock()
 	defer v.platformMut.Unlock()
-	_, err := v.archivePlatformData(path, pd, copyOnly, true)
+	_, err := v.archivePlatformData(path, pd, copyOnly, !v.skipArchiveCleanup)
 	return err
 }
 func (v *staggered) RestoreWithPlatformData(path string, stamp time.Time, current protocol.PlatformData) error {
