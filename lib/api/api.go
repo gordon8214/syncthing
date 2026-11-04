@@ -1520,10 +1520,47 @@ func (s *service) postSystemUpgrade(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// DevicePauseController lets a host preserve explicit pause intent separately
+// from temporary policies applied to the effective device configuration.
+// Ordinary configuration writes do not call this interface.
+type DevicePauseController interface {
+	SetDevicePause(devices []protocol.DeviceID, paused bool) error
+}
+
 func (s *service) makeDevicePauseHandler(paused bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		qs := r.URL.Query()
 		deviceStr := qs.Get("device")
+		if controller, ok := s.cfg.(DevicePauseController); ok {
+			var devices []protocol.DeviceID
+			if deviceStr == "" {
+				for id := range s.cfg.Devices() {
+					if id != s.id {
+						devices = append(devices, id)
+					}
+				}
+			} else {
+				device, err := protocol.DeviceIDFromString(deviceStr)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if _, exists := s.cfg.Device(device); !exists {
+					http.Error(w, "not found", http.StatusNotFound)
+					return
+				}
+				// A host's connectivity policy governs remote devices only.
+				if device != s.id {
+					devices = append(devices, device)
+				}
+			}
+			if len(devices) != 0 {
+				if err := controller.SetDevicePause(devices, paused); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			}
+			return
+		}
 
 		var msg string
 		var status int
