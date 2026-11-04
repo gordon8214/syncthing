@@ -12,6 +12,7 @@ import (
 
 	"github.com/syncthing/syncthing/lib/fs"
 	"github.com/syncthing/syncthing/lib/model"
+	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/versioner"
 )
 
@@ -32,6 +33,18 @@ var (
 type versionedModel interface {
 	FileVersions(folder, name string) ([]versioner.FileVersion, error)
 	OpenFileVersion(folder, name string, versionTime time.Time) (fs.File, error)
+}
+
+// OpenFileVersionSnapshot opens a complete Mac archive, including its saved
+// metadata. The caller closes the file; no live file or version is modified.
+func (m *Internals) OpenFileVersionSnapshot(folder, name string, stamp time.Time) (fs.File, protocol.PlatformData, error) {
+	v, ok := m.model.(interface {
+		OpenFileVersionSnapshot(string, string, time.Time) (fs.File, protocol.PlatformData, error)
+	})
+	if !ok {
+		return nil, protocol.PlatformData{}, versioner.ErrVersionMetadataMissing
+	}
+	return v.OpenFileVersionSnapshot(folder, name, stamp)
 }
 
 var errNoFileVersions = errors.New("model does not support file versions")

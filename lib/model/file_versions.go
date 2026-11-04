@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/syncthing/syncthing/lib/fs"
+	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/versioner"
 )
 
@@ -34,6 +35,22 @@ func (m *model) fileVersioner(folder string) (versioner.FileVersioner, error) {
 		return nil, versioner.ErrRestorationNotSupported
 	}
 	return fv, nil
+}
+
+// OpenFileVersionSnapshot reads an archive without changing any live file or index.
+func (m *model) OpenFileVersionSnapshot(folder, name string, stamp time.Time) (fs.File, protocol.PlatformData, error) {
+	m.mut.RLock()
+	err := m.checkFolderRunningRLocked(folder)
+	v := m.folderVersioners[folder]
+	m.mut.RUnlock()
+	if err != nil {
+		return nil, protocol.PlatformData{}, err
+	}
+	s, ok := versioner.AsVersionSnapshotter(v)
+	if !ok {
+		return nil, protocol.PlatformData{}, versioner.ErrVersionMetadataMissing
+	}
+	return s.OpenVersionSnapshot(name, stamp)
 }
 
 // FileVersions returns the versions of a file in the folder, newest first.
