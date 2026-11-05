@@ -92,10 +92,9 @@ func (dir *eventDir) eventType() fs.EventType {
 }
 
 type aggregator struct {
-	// folderID never changes and is accessed in CommitConfiguration, which
-	// asynchronously updates folderCfg -> can't use folderCfg.ID (racy)
+	// folderID never changes: String and CommitConfiguration are called outside
+	// the main loop while it applies configuration updates.
 	folderID        string
-	folderCfg       config.FolderConfiguration
 	folderCfgUpdate chan config.FolderConfiguration
 	// Time after which an event is scheduled for scanning when no modifications occur.
 	notifyDelay time.Duration
@@ -418,7 +417,7 @@ func (a *aggregator) isOld(ev *aggregatedEvent, currTime time.Time, delayRem boo
 }
 
 func (a *aggregator) String() string {
-	return fmt.Sprintf("aggregator/%s:", a.folderCfg.Description())
+	return fmt.Sprintf("aggregator/%s:", a.folderID)
 }
 
 func (a *aggregator) CommitConfiguration(_, to config.Configuration) bool {
@@ -445,7 +444,6 @@ func (a *aggregator) updateConfig(folderCfg config.FolderConfiguration) {
 		// Use the default FSWatcherTimeoutS calculation
 		a.notifyTimeout = notifyTimeout(folderCfg.FSWatcherDelayS)
 	}
-	a.folderCfg = folderCfg
 }
 
 func updateInProgressSet(event events.Event, inProgress map[string]struct{}) {

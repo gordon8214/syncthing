@@ -59,6 +59,35 @@ type expectedBatch struct {
 	beforeMs int
 }
 
+func TestStringDuringConfigurationUpdates(t *testing.T) {
+	folderCfg := defaultFolderCfg.Copy()
+	folderCfg.ID = "logging-race"
+	a := newAggregator(t.Context(), folderCfg)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 1000 {
+			updated := folderCfg.Copy()
+			updated.Label = strconv.Itoa(i)
+			updated.FSWatcherDelayS = float64(i + 1)
+			a.updateConfig(updated)
+		}
+	}()
+
+	// Configuration subscribers are formatted outside the aggregator's goroutine,
+	// including when the configuration debug message is filtered out.
+	for range 1000 {
+		if got := a.String(); got != "aggregator/logging-race:" {
+			t.Errorf("unexpected diagnostic string: %q", got)
+		}
+	}
+	<-done
+	if a.notifyDelay != 1000*time.Second || a.notifyTimeout != 1000*time.Second {
+		t.Fatalf("watcher timing was not updated: %v, %v", a.notifyDelay, a.notifyTimeout)
+	}
+}
+
 // TestAggregate checks whether maxFilesPerDir+1 events in one dir are
 // aggregated to parent dir
 func TestAggregate(t *testing.T) {
